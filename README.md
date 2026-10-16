@@ -85,7 +85,7 @@ Press `L` or click the cover. The artwork and controls are on the left, and the 
 
 ### Home
 
-<img src="screenshots/home.png" width="880" alt="Home: the DJ card, recent playlists as tiles, and your top artists">
+<img src="screenshots/home.png" width="880" alt="Home: the DJ card, recent playlists and artists as tiles, Jump back in, and the player bar tinted in the warm colors of the cover that's playing">
 
 Your recent playlists and albums, your top artists and the DJ. Click the DJ card, or type `dj` in `⌘K`, and X picks songs for you and introduces them in X's own voice. What X says shows in the player bar. **Settings → Playback → DJ voice** turns the talking off.
 
@@ -211,4 +211,4 @@ Downloads stay encrypted and play only in Glass while you're signed in. Songs yo
 
 ---
 
-<sub>Glass isn't affiliated with or endorsed by Spotify. Spotify is a trademark of Spotify AB. This repository holds the released app only. The Now Playing and playlist-menu screenshots show a real library; the others use Glass's demo library. Album art and lyrics belong to their owners.</sub>
+<sub>Glass isn't affiliated with or endorsed by Spotify. Spotify is a trademark of Spotify AB. This repository holds the released app only. The Now Playing, Home and playlist-menu screenshots show a real library; the others use Glass's demo library. Album art and lyrics belong to their owners.</sub>
