@@ -196,7 +196,7 @@ Glass has no analytics, telemetry or crash reporting. It talks to Spotify,
 to LRCLIB for lyrics and to GitHub for updates. It contacts JioSaavn and
 YouTube Music only when you save songs, OpenAI only if you use the assistant,
 and your other computers only if you turn on sharing. The Activity page lists
-every request it makes.
+who Glass talks to and logs its requests to Spotify and LRCLIB.
 
 | Where | What |
 |---|---|
