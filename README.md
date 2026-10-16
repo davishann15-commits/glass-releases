@@ -117,7 +117,7 @@ Search Spotify for songs, artists, albums and podcasts, or browse by genre. Anyw
 
 ## Save songs as files
 
-<img src="screenshots/save-songs-settings.png" width="880" alt="Settings: the Save songs section with its format choice">
+<img src="screenshots/save-playlist-menu.png" width="880" alt="A playlist page with its menu open: Share, then Download playlist as M4A">
 
 Right-click a song, playlist, album or artist and choose **Share → Download as M4A**. Glass saves tagged audio files, with title, artists, album, track number, year and cover art, to **`~/Music/Glass`**, which Local Files already shows.
 
@@ -125,6 +125,8 @@ Right-click a song, playlist, album or artist and choose **Share → Download as
 - **Formats.** **M4A** keeps the source audio exactly as it is, up to 320 kbps. **MP3** converts it so it plays anywhere, at the bitrate you choose (128–320 kbps).
 - **Where the audio comes from.** Not Spotify. Each song is found on JioSaavn and, if it isn't there, on YouTube Music, matched by title, artists and length. Everything runs inside Glass: there's nothing extra to install.
 - **Settings → Save songs** chooses the format, MP3 bitrate and folder, and can add the folder to Local Files.
+
+<img src="screenshots/save-songs-settings.png" width="700" alt="Settings: the Save songs section with its format choice">
 
 Podcasts and audiobooks can't be saved this way. Please only save music you have the right to keep.
 
@@ -209,4 +211,4 @@ Downloads stay encrypted and play only in Glass while you're signed in. Songs yo
 
 ---
 
-<sub>Glass isn't affiliated with or endorsed by Spotify. Spotify is a trademark of Spotify AB. This repository holds the released app only. The two Now Playing screenshots show real albums; the others use Glass's demo library. Album art and lyrics belong to their owners.</sub>
+<sub>Glass isn't affiliated with or endorsed by Spotify. Spotify is a trademark of Spotify AB. This repository holds the released app only. The Now Playing and playlist-menu screenshots show a real library; the others use Glass's demo library. Album art and lyrics belong to their owners.</sub>
