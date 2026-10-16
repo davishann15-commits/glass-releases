@@ -71,9 +71,9 @@ Glass also runs on Arch Linux, but only the macOS app is published here.
 
 ### Now Playing
 
-<img src="screenshots/now-playing.png" width="880" alt="Now Playing with a pink-to-violet cover from the demo library: the whole window and controls tinted to match">
+<img src="screenshots/now-playing-playlist.png" width="880" alt="Glass playing Tatsuro Yamashita's SPARKLE: the cover and controls on the left, the playlist it's playing from on the right with the current song highlighted, all in the album's blues">
 
-<sub>The same screen with another album: the colors follow the cover (compare the screenshot at the top).</sub>
+<sub>Another album, another palette: here everything turns the cover's blue (compare the red at the top). On the right, <code>P</code> shows the playlist that's playing.</sub>
 
 Press `L` or click the cover. The artwork and controls are on the left, and the lyrics are on the right, following the song. The word being sung is highlighted.
 
@@ -209,4 +209,4 @@ Downloads stay encrypted and play only in Glass while you're signed in. Songs yo
 
 ---
 
-<sub>Glass isn't affiliated with or endorsed by Spotify. Spotify is a trademark of Spotify AB. This repository holds the released app only. The top screenshot shows a real album; the others use Glass's demo library. Album art and lyrics belong to their owners.</sub>
+<sub>Glass isn't affiliated with or endorsed by Spotify. Spotify is a trademark of Spotify AB. This repository holds the released app only. The two Now Playing screenshots show real albums; the others use Glass's demo library. Album art and lyrics belong to their owners.</sub>
