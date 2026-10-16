@@ -201,10 +201,10 @@ who Glass talks to and logs its requests to Spotify and LRCLIB.
 | Where | What |
 |---|---|
 | `~/.config/glass/` | `theme.toml` and `config.toml`, once you change something |
-| `~/Library/Application Support/Glass/` | Preferences, your Spotify sign-in (only you can read it), lyrics picks, local playlists |
+| `~/Library/Application Support/Glass/` | Preferences, your Spotify sign-in and sharing key (only you can read them), the list of downloads, lyrics picks, local playlists |
 | `~/Library/Caches/Glass/` | The streaming cache, downloads (encrypted, as Spotify sends them) and saved lyrics |
 | `~/Music/Glass/` | Songs you save as files |
-| Keychain | The assistant's sign-in |
+| Keychain | The assistant's sign-in, or your OpenAI API key |
 
 Downloads stay encrypted and play only in Glass while you're signed in. Songs
 you save as files are ordinary M4A or MP3 files.
