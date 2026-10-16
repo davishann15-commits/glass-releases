@@ -127,7 +127,8 @@ in Glass.
 
 If you use Glass on more than one computer, it can send songs between them over
 your home network. This is off until you turn it on in Settings → Your Library,
-on each computer. Only turn it on for networks you trust.
+on each computer. The first time two computers connect, both show the same
+six-digit code, and nothing is sent until you confirm it on each one.
 
 ## Make it yours
 
