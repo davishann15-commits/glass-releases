@@ -16,12 +16,12 @@ macOS 12 or later, Apple silicon or Intel. Playback needs Spotify Premium.
 <br>
 
 Glass does the things you'd expect from a Spotify app: your library, search,
-playlists, the queue, Spotify Connect, the DJ, and downloads for listening
-offline. It's written in Rust and draws everything itself, so it starts fast,
+playlists, the queue, Spotify Connect, the DJ, and downloads. It's written in Rust and draws everything itself, so it starts fast,
 and it uses next to no CPU while it waits in the background.
 
-It also does a few things the official app doesn't. Lyrics follow the song word
-by word. The Now Playing screen takes its colors from the album cover. You can
+It also does a few things the official app doesn't. Lyrics can be translated,
+under each line or in place of it. The Now Playing screen takes its colors from
+the album cover. You can
 save songs as ordinary M4A or MP3 files. The whole look lives in a text file you
 can edit, and almost everything has a keyboard shortcut.
 
@@ -42,8 +42,9 @@ background and install the next time you quit. Each one is signed, and Glass
 won't install anything whose signature doesn't check out. Settings → Updates
 turns this off.
 
-Lyrics translation is optional. It uses Apple's on-device translation on
-macOS 26 and later, or the assistant if you've turned it on.
+Lyrics translation is optional. It uses Spotify's own translation when there
+is one, Apple's on-device translation on macOS 26 and later, or the assistant
+once you've signed in to it.
 
 ## Now Playing
 
@@ -84,8 +85,8 @@ or the assistant.
 
 On a playlist or album, click a song to play it, or `⌘`-click and `⇧`-click to
 select several. `/` filters the list, and the column headers sort it. From
-there you can add songs to other playlists, download the whole thing for
-offline listening, or save it as files.
+there you can add songs to other playlists, download the whole thing so it
+starts at once (playing still needs a connection), or save it as files.
 
 <img src="screenshots/artist.png" width="880" alt="An artist page: a large header with the artist's name and followers, then their popular songs">
 
@@ -163,7 +164,8 @@ opening at login and the name other Spotify apps see.
 
 ## Keyboard shortcuts
 
-None of these fire while you're typing in a field. `⌘/` shows them all.
+Space, the letter keys, `/` and `[ ]` don't fire while you're typing in a
+field; the `⌘` keys work anywhere. `⌘/` shows them all.
 
 | Keys | |
 |---|---|
@@ -179,8 +181,9 @@ None of these fire while you're typing in a field. `⌘/` shows them all.
 | `L` · `Q` · `P` | Now Playing with the lyrics, the queue, or what's playing |
 | `D` | Devices (on Now Playing) |
 | `V` | Visualizer |
-| `[` / `]` | Move this song's lyrics earlier or later |
-| `j` / `k`, `Enter`, `⇧Enter` | Move, open, play |
+| `[` / `]` | Move this song's lyrics later or earlier |
+| `j` / `k`, `Enter`, `⇧Enter` | Library: move, open, play |
+| `j` / `k`, `Enter`, `⇧Enter` | Song lists: move, play, add to the queue |
 | `Esc` | Close whatever is on top |
 
 ## The assistant
