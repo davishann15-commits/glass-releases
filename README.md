@@ -13,7 +13,7 @@ macOS 12 or later · Apple silicon and Intel · Spotify Premium
 
 <br>
 
-<img src="screenshots/now-playing.png" width="880" alt="Glass's Now Playing screen: the album art, controls and word-synced lyrics, with the whole window tinted in the album's colors">
+<img src="screenshots/now-playing-album-colors.png" width="880" alt="Glass playing Dolly Parton's Here You Come Again: the cover and controls on the left, line-synced lyrics over the mirrored visualizer on the right, with the window and controls tinted in the album's red and blue">
 
 </div>
 
@@ -71,7 +71,9 @@ Glass also runs on Arch Linux, but only the macOS app is published here.
 
 ### Now Playing
 
-<img src="screenshots/now-playing.png" width="880" alt="Now Playing: artwork, title, progress and controls on the left; lyrics with the sung line in bold on the right">
+<img src="screenshots/now-playing.png" width="880" alt="Now Playing with a pink-to-violet cover from the demo library: the whole window and controls tinted to match">
+
+<sub>The same screen with another album: the colors follow the cover (compare the screenshot at the top).</sub>
 
 Press `L` or click the cover. The artwork and controls are on the left, and the lyrics are on the right, following the song. The word being sung is highlighted.
 
@@ -207,4 +209,4 @@ Downloads stay encrypted and play only in Glass while you're signed in. Songs yo
 
 ---
 
-<sub>Glass isn't affiliated with or endorsed by Spotify. Spotify is a trademark of Spotify AB. This repository holds the released app only. Screenshots use Glass's demo library.</sub>
+<sub>Glass isn't affiliated with or endorsed by Spotify. Spotify is a trademark of Spotify AB. This repository holds the released app only. The top screenshot shows a real album; the others use Glass's demo library. Album art and lyrics belong to their owners.</sub>
