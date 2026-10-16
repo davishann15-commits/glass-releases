@@ -222,4 +222,4 @@ published here.
 
 ---
 
-<sub>Glass isn't affiliated with or endorsed by Spotify. Spotify is a trademark of Spotify AB. This repository holds the released app only; the licenses of the open-source software in it are in the app, under About → Open-source licenses. The Now Playing, Home and playlist-menu screenshots show a real library; the others use Glass's demo library. Album art and lyrics belong to their owners.</sub>
+<sub>Glass isn't affiliated with or endorsed by Spotify. Spotify is a trademark of Spotify AB. This repository holds the released app only. Glass is under the MIT License; the open-source software in it keeps its own licenses, listed in the app under About → Open-source licenses. LAME, its MP3 encoder (LGPL), is a separate library in the app, and its source is in the [lame-3.100](https://github.com/davishann15-commits/glass-releases/releases/tag/lame-3.100) release. The Now Playing, Home and playlist-menu screenshots show a real library; the others use Glass's demo library. Album art and lyrics belong to their owners.</sub>
