@@ -121,7 +121,7 @@ have the right to keep.
 
 ## Your own music
 
-Local Files plays the music on your Mac (MP3, M4A, FLAC, Ogg, WAV and AIFF),
+Local Files plays the music on your Mac (MP3, M4A, AAC, FLAC, Ogg, WAV and AIFF),
 organized by album, song, artist or genre. Local songs in your Spotify
 playlists play too, and you can make playlists of local files that live only
 in Glass.
