@@ -42,7 +42,7 @@ translation is macOS-only.
 ## Build and run
 
 Clone the public source with `git clone https://github.com/davishann15-commits/glass-releases.git`
-and `cd glass-releases`. On macOS, install Xcode command-line tools
+and `cd glass-releases/source`. On macOS, install Xcode command-line tools
 (`xcode-select --install`) and the LAME build tools
 (`brew install autoconf automake libtool`) before building. Use a Git clone:
 GitHub source archives omit LAME for the Arch packaging workflow.
