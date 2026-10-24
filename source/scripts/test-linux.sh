@@ -21,7 +21,7 @@ docker exec "$NAME" mkdir -p /src
 TREE=HEAD
 PREFIX=$(git rev-parse --show-prefix)
 [ -z "$PREFIX" ] || TREE="HEAD:${PREFIX%/}"
-git archive "$TREE" | docker exec -i "$NAME" tar -x -C /src
+git -C "$(git rev-parse --show-toplevel)" archive "$TREE" | docker exec -i "$NAME" tar -x -C /src
 docker exec "$NAME" sh -c 'printf "pcm.!default {\n  type plug\n  slave.pcm \"null\"\n}\n" > /etc/asound.conf'
 docker exec -e CARGO_PROFILE_DEV_DEBUG=0 "$NAME" sh -c '. $HOME/.cargo/env && cd /src &&
   cargo test -q --locked &&

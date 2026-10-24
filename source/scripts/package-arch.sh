@@ -17,7 +17,7 @@ if git rev-parse --verify -q HEAD >/dev/null 2>&1; then
   TREE=HEAD
   PREFIX=$(git rev-parse --show-prefix)
   [ -z "$PREFIX" ] || TREE="HEAD:${PREFIX%/}"
-  git archive --format=tar.gz --prefix="glass-$PKGVER/" -o "$OUT/glass-$PKGVER.tar.gz" "$TREE"
+  git -C "$(git rev-parse --show-toplevel)" archive --format=tar.gz --prefix="glass-$PKGVER/" -o "$PWD/$OUT/glass-$PKGVER.tar.gz" "$TREE"
 else
   # Otherwise the working tree, without builds, packages, local tooling or the LAME
   # source (Arch builds against its lame package; see .gitattributes).
