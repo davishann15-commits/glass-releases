@@ -7,6 +7,8 @@ A Spotify player for the Mac that looks like a terminal window made of smoked gl
 **[Download the latest version](https://github.com/davishann15-commits/glass-releases/releases/latest)**<br>
 macOS 12 or later, Apple silicon or Intel. Playback needs Spotify Premium.
 
+**[Browse the source](src/)** · **[Build from source](#build-from-source)** · **[Developer guide](DEVELOPING.md)**
+
 <br>
 
 <img src="screenshots/now-playing-album-colors.png" width="880" alt="Glass playing Dolly Parton's Here You Come Again: the cover and controls on the left, line-synced lyrics over the mirrored visualizer on the right, with the window tinted in the album's red and blue">
@@ -45,6 +47,33 @@ turns this off.
 Lyrics translation is optional. It uses Spotify's own translation when there
 is one, Apple's on-device translation on macOS 26 and later, or the assistant
 once you've signed in to it.
+
+## Build from source
+
+This repository includes the Glass **1.0.0-beta.22** source code, the same
+version as the latest app release. The source was published from development
+commit `b403e2aec0047a18203ccdd04fe0ab38365dd8f7`.
+
+Install stable Rust with [rustup](https://rustup.rs). On macOS, also install
+Apple's command-line developer tools (`xcode-select --install`), Autoconf,
+Automake and Libtool (`brew install autoconf automake libtool`). Then:
+
+```sh
+git clone https://github.com/davishann15-commits/glass-releases.git
+cd glass-releases
+./scripts/bundle.sh
+open target/Glass.app
+```
+
+For development, use `cargo run`. The source also supports Arch Linux; see the
+[developer guide](DEVELOPING.md) for Linux packaging, configuration, tests and
+release tooling. Vendored dependencies are included under [`vendor/`](vendor/),
+including the LAME source required by macOS builds. Clone the repository to
+build on macOS; GitHub's automatic source archives omit LAME because the Arch
+source package uses the system library.
+
+Glass's code is [MIT licensed](LICENSE). Third-party components keep their own
+licenses; see [third-party notices](packaging/THIRD-PARTY-NOTICES.txt).
 
 ## Now Playing
 
@@ -225,4 +254,4 @@ published here.
 
 ---
 
-<sub>Glass isn't affiliated with or endorsed by Spotify. Spotify is a trademark of Spotify AB. This repository holds the released app only. Glass is under the MIT License; the open-source software in it keeps its own licenses, listed in the app under About → Open-source licenses. LAME, its MP3 encoder (LGPL), is a separate library in the app, and its source is in the [lame-3.100](https://github.com/davishann15-commits/glass-releases/releases/tag/lame-3.100) release. The Now Playing, Home and playlist-menu screenshots show a real library; the others use Glass's demo library. Album art and lyrics belong to their owners.</sub>
+<sub>Glass isn't affiliated with or endorsed by Spotify. Spotify is a trademark of Spotify AB. This repository holds the source code, released app and release notes. Glass is under the MIT License; the open-source software in it keeps its own licenses, listed in the app under About → Open-source licenses. LAME, its MP3 encoder (LGPL), is a separate library in the app, and its source is in the [lame-3.100](https://github.com/davishann15-commits/glass-releases/releases/tag/lame-3.100) release. The Now Playing, Home and playlist-menu screenshots show a real library; the others use Glass's demo library. Album art and lyrics belong to their owners.</sub>

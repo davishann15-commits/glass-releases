@@ -1,0 +1,68 @@
+# Glass settings — ~/.config/glass/config.toml
+# (or $XDG_CONFIG_HOME/glass/config.toml when XDG_CONFIG_HOME is set)
+#
+# Every key is optional: anything missing uses the default shown here.
+# Glass watches this file and applies changes as soon as you save. If a value
+# can't be read, Glass keeps the last good settings and shows the error in
+# Settings → Lyrics. The look of the app lives in theme.toml, not here.
+# Nothing in this file is secret; never put passwords or tokens in it.
+
+[lyrics]
+# Where lyrics come from:
+#   "auto"    LRCLIB first; with fallback on, then Spotify's lyrics (Spotify songs)
+#   "lrclib"  LRCLIB only (lrclib.net, a free community lyrics database)
+#   "spotify" Spotify only (Spotify songs; uses Glass's Spotify connection)
+provider = "auto"
+
+# With "auto": when LRCLIB has no usable match, try Spotify's lyrics.
+fallback = true
+
+# Timing offset in milliseconds, -10000 to 10000. Positive shows lyrics
+# earlier (when they lag behind the music, e.g. on Bluetooth speakers);
+# negative shows them later. Also adjustable on the Now Playing screen.
+offset_ms = 0
+
+# Translation: "off" (the original lyrics), "below" (the original with the
+# translation under each line) or "only" (the translation instead). T on the
+# now-playing screen switches between them.
+translation = "off"
+# The language to translate into: "system" (your system language) or a code
+# such as "en", "es" or "ja".
+translate_to = "system"
+# Who translates:
+#   "auto"      the lyrics provider's own translation when it has one, then
+#               Apple's on-device translation (macOS), then the assistant
+#               (if it's on)
+#   "apple"     Apple's on-device translation only (macOS; free, private)
+#   "assistant" the assistant's model (any system; sends the lyrics to OpenAI)
+translator = "auto"
+
+# Optional: a homepage or email LRCLIB can contact you at about Glass's
+# requests. It's sent in the User-Agent header to lrclib.net; left empty, that
+# says only "Glass/<version> (desktop music player)".
+contact = ""
+
+[assistant]
+# The AI assistant (turn it off in Settings → Assistant).
+# It never sees audio, file paths or your Spotify login, and sees lyrics only
+# when it translates them (translator = "assistant", or "auto" without Apple's).
+enabled = true
+
+# Let the assistant use your Spotify library, listening history, search and
+# playback (queue, play, like, build playlists). Only what it looks up for a
+# request is sent to OpenAI. Set to false to keep it to your local files.
+spotify = true
+
+# How requests are paid for:
+#   "chatgpt"  your ChatGPT plan, via Continue with ChatGPT (eligible Plus/Pro)
+#   "api_key"  your own OpenAI API key, billed by OpenAI separately from ChatGPT
+# Glass never switches between them on its own. Sign-in tokens and API keys
+# are kept in the system keyring, never in this file.
+billing = "chatgpt"
+
+# The model (as listed in Settings → Assistant for your account).
+model = ""
+
+# Set after the one-time "You're using your ChatGPT plan" message.
+welcomed = false
+

@@ -1,0 +1,34 @@
+Glass
+=====
+
+Install
+  Drag Glass to the Applications folder.
+
+First open (this beta isn't notarized by Apple)
+  1. Open Glass from Applications. macOS says it can't check it: click Done
+     (Cancel on macOS 14 and earlier).
+  2. Open System Settings → Privacy & Security, scroll down, and click
+     "Open Anyway" next to the note about Glass. Confirm with your password.
+     (On macOS 12: System Preferences → Security & Privacy → General.)
+  You only need to do this once.
+
+  Or, in Terminal:   xattr -dr com.apple.quarantine /Applications/Glass.app
+
+Updates
+  Glass updates itself: it downloads new versions in the background and
+  installs them when you quit (or straight away with "update … · restart" at
+  the top). Keep it in Applications so it can. Settings → Updates turns this
+  off or checks now. Only updates signed by Glass's developer are installed.
+
+Signing in
+  Glass asks you to sign in with your own Spotify account (Premium is needed
+  to play music). The optional AI assistant (Settings → Assistant) uses your
+  own ChatGPT account or OpenAI API key.
+
+Keys worth knowing
+  L lyrics · Q queue · P playlist · V visualizer · T lyrics translation
+  ⌘K command bar (type ? to ask the assistant) · ⌘T theme · ⌘/ all shortcuts
+
+Works on macOS 12 or later, Apple silicon and Intel. Translating lyrics on
+this Mac itself (free, nothing leaves it) needs macOS 26 or later; on older
+versions the assistant can translate them.
