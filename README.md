@@ -27,7 +27,7 @@ and it uses next to no CPU while it waits in the background.
 It also does a few things the official app doesn't. Lyrics can be translated,
 under each line or in place of it. The Now Playing screen takes its colors from
 the album cover. You can
-save songs as ordinary M4A or MP3 files. The whole look lives in a text file you
+save songs as ordinary M4A or MP3 files. Entire playlists can be downloaded locally, and IOS users have the ability to add their local songs to Apple Music, natively. While Free Users cannot stream songs, they can still view them and download them locally. The whole look lives in a text file you
 can edit, and almost everything has a keyboard shortcut.
 
 ## Install
