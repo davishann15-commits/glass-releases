@@ -1,0 +1,99 @@
+[package]
+name = "glass-core"
+version = "1.0.0-beta.22"
+edition = "2024"
+description = "Glass for iOS: the shared Rust core (Spotify, playback, lyrics, local music, sharing, assistant) behind the SwiftUI app"
+license = "MIT"
+publish = false
+build = "build.rs"
+
+# Its own workspace: the desktop crate at the repository root stays a single package,
+# and this one builds with its own lockfile (seeded from the desktop's, so shared
+# dependencies resolve to the same versions).
+[workspace]
+
+[lib]
+name = "glass_core"
+# staticlib: linked into the iOS app (ios/scripts/build-core.sh makes the XCFramework).
+# lib: host unit tests (`cargo test` on the Mac) and binding generation.
+crate-type = ["staticlib", "lib"]
+
+[dependencies]
+uniffi = "0.32"
+librespot-core = "0.8"
+librespot-playback = { version = "0.8", features = ["rodio-backend"] }
+librespot-connect = "0.8"
+librespot-oauth = "0.8"
+librespot-metadata = "0.8"
+librespot-protocol = "0.8"
+librespot-audio = "0.8"
+protobuf = "3.7"
+http = "1"
+futures-util = "0.3"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "gzip"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "net", "io-util", "fs"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+rodio = { version = "0.21", default-features = false, features = ["playback", "symphonia-mp3", "symphonia-flac", "symphonia-ogg", "symphonia-vorbis", "symphonia-isomp4", "symphonia-aac", "symphonia-alac", "symphonia-wav", "symphonia-pcm", "symphonia-aiff"] }
+lofty = "0.25"
+biquad = "0.6"
+log = "0.4"
+anyhow = "1"
+thiserror = "2"
+toml_edit = "0.25"
+serde-saphyr = { version = "2", default-features = false, features = ["deserialize"] }
+memmap2 = "0.9"
+jsonwebtoken = { version = "9", default-features = false }
+# iOS Keychain (keyring's apple-native store is the iOS Keychain on iOS).
+keyring = { version = "3", features = ["apple-native"] }
+sha2 = "0.10"
+hmac = "0.12"
+snow = "0.9"
+base64 = "0.22"
+rand = "0.8"
+url = "2"
+uuid = { version = "1", features = ["v4"] }
+des = "0.8"
+ecb = "0.1"
+symphonia = { version = "0.5", default-features = false, features = ["aac", "isomp4"] }
+image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
+# The theme's color type (egui's, without egui).
+ecolor = "0.36"
+# Only so the shared sharing code compiles; on iOS discovery goes through Bonjour (Swift).
+mdns-sd = "0.13"
+# Add to Apple Music: the iPhone's own services (AFC, heartbeat, notifications, the
+# RemotePairing tunnel) reached through LocalDevVPN, and its media library database
+# (rusqlite on the system's SQLite). Ported from ByeTunes; see src/apple_music/.
+idevice = { version = "0.1.68", default-features = false, features = ["ring", "tcp", "afc", "heartbeat", "notification_proxy", "rsd", "remote_pairing", "tunnel_tcp_stack", "core_device", "core_device_proxy"] }
+rusqlite = "0.40"
+sha1 = "0.10"
+directories = "6"
+open = "5"
+
+[dev-dependencies]
+env_logger = { version = "0.11", default-features = false }
+jsonwebtoken = { version = "9", features = ["use_pem"] }
+rsa = "0.9"
+
+[build-dependencies]
+autotools = "0.2.6"
+
+[profile.dev]
+# Keeps target/ small (debug info and incremental state are most of a debug
+# build): the development Mac's disk is tight.
+debug = "line-tables-only"
+incremental = false
+[profile.dev.package."*"]
+opt-level = 2
+debug = false
+
+[profile.release]
+lto = "thin"
+codegen-units = 4
+strip = "debuginfo"
+opt-level = 3
+
+[patch.crates-io]
+librespot-playback = { path = "../../vendor/librespot-playback" }
+librespot-connect = { path = "../../vendor/librespot-connect" }
+librespot-core = { path = "../../vendor/librespot-core" }

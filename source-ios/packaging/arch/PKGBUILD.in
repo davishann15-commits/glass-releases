@@ -1,0 +1,75 @@
+# Maintainer: Davis Hann
+#
+# Build and install on Arch Linux:
+#   makepkg -si
+# (scripts/package-arch.sh writes this PKGBUILD next to the source tarball.)
+
+pkgname=glass
+pkgver=@PKGVER@
+pkgrel=1
+pkgdesc="Spotify player with synced lyrics, translation, a visualizer and an optional assistant"
+url='https://github.com/davishann15-commits/glass-releases'
+arch=('x86_64' 'aarch64')
+license=('MIT')
+depends=(
+  'alsa-lib'      # audio (works with pipewire-alsa or pulseaudio-alsa)
+  'dbus'          # media keys (MPRIS) and the Secret Service keyring
+  'openssl'
+  'libgcc'
+  'glibc'
+  'libxkbcommon'  # keyboard input (loaded at run time, so namcap can't see it)
+  'libglvnd'      # OpenGL (loaded at run time too)
+  'lame'          # the MP3 encoder (Share ▸ Download as MP3)
+  'hicolor-icon-theme'
+)
+optdepends=(
+  'pipewire-alsa: play through PipeWire'
+  'wayland: Wayland sessions'
+  'libx11: X11 sessions'
+  'libxcursor: X11 sessions'
+  'libxrandr: X11 sessions'
+  'libxi: X11 sessions'
+  'libxkbcommon-x11: X11 sessions (needed for Glass to open on X11)'
+  'gnome-keyring: keep the assistant sign-in in the system keyring'
+  'kwallet: keep the assistant sign-in in the system keyring (KDE)'
+  'xdg-desktop-portal-gtk: file and folder pickers (or the KDE or GNOME portal, or zenity)'
+  'xdg-utils: open the Spotify sign-in page and links in your browser'
+  'libnotify: desktop notifications when the song changes'
+  'noto-fonts-cjk: Japanese, Chinese and Korean titles and lyrics'
+  'ttf-jetbrains-mono: the interface font'
+  'ttf-dejavu: fallback interface font'
+)
+makedepends=('cargo' 'pkgconf')
+source=("$pkgname-$pkgver.tar.gz")
+sha256sums=('@SHA256@')
+# Cargo's release profile already does LTO and strips.
+options=('!lto' '!debug' '!strip')
+
+prepare() {
+  cd "$pkgname-$pkgver"
+  export RUSTUP_TOOLCHAIN=stable
+  cargo fetch --locked --target "$(rustc -vV | sed -n 's/host: //p')"
+}
+
+build() {
+  cd "$pkgname-$pkgver"
+  export RUSTUP_TOOLCHAIN=stable
+  export CARGO_TARGET_DIR=target
+  # A release build: it checks for new versions (and says when one is out).
+  export GLASS_RELEASE=1
+  # Paths in panic messages: the build's folders, not this computer's (the
+  # builder's home folder would otherwise be written into the binary).
+  export RUSTFLAGS="${RUSTFLAGS:-} --remap-path-prefix=${CARGO_HOME:-$HOME/.cargo}=/cargo --remap-path-prefix=$srcdir=/build"
+  cargo build --frozen --release
+}
+
+package() {
+  cd "$pkgname-$pkgver"
+  install -Dm755 target/release/glass "$pkgdir/usr/bin/glass"
+  install -Dm644 packaging/linux/glass.desktop "$pkgdir/usr/share/applications/glass.desktop"
+  for s in 16 32 64 128 256 512; do
+    install -Dm644 "packaging/icon/png/glass-$s.png" "$pkgdir/usr/share/icons/hicolor/${s}x${s}/apps/glass.png"
+  done
+  install -Dm644 README.md FEATURES.md config.example.toml theme.example.toml -t "$pkgdir/usr/share/doc/$pkgname"
+  install -Dm644 LICENSE packaging/THIRD-PARTY-NOTICES.txt -t "$pkgdir/usr/share/licenses/$pkgname"
+}

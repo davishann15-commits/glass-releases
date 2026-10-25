@@ -1,0 +1,75 @@
+# Glass theme — ~/.config/glass/theme.toml
+# (or $XDG_CONFIG_HOME/glass/theme.toml when XDG_CONFIG_HOME is set)
+#
+# Every key is optional: anything missing uses the default shown here.
+# Glass watches this file and applies changes as soon as you save.
+# If something can't be read, Glass keeps the last good theme and shows the
+# error in Settings and in the theme panel.
+#
+# Colors are hex: #RGB, #RRGGBB, or #RRGGBBAA (the last pair is alpha,
+# 00 = transparent, FF = solid).
+
+[theme]
+background = "#0F1115"   # window tint behind everything
+foreground = "#E9E4DC"   # primary text and icons
+accent     = "#4F83A3"   # selection outline, active tab, play button, progress
+border     = "#090A0B"   # thin outlines and dividers
+opacity    = 0.45        # how solid the background is: 0 = clear glass, 1 = opaque
+blur       = 28          # background blur radius in points, 0–100 (0 = no blur)
+
+[colors]
+# Derived from [theme] when left out. Uncomment to override.
+# surface           = "#E9E4DC0A"   # panels, rows, inputs
+# surface_raised    = "#E9E4DC14"   # search bar, theme panel, hovered buttons
+# overlay           = "#0F1115F0"   # menus, dialogs and popups (keep these nearly solid)
+# text_secondary    = "#E9E4DCCC"   # subtitles, metadata
+# text_muted        = "#E9E4DC9E"   # numbers, hints, timestamps
+# on_accent         = "#E9E4DC"     # text drawn on an accent fill
+# selection         = "#4F83A329"   # fill behind the selected row
+# hover             = "#E9E4DC0F"   # fill behind hovered rows and buttons
+# focus             = "#4F83A3"     # keyboard focus ring
+# player_background = "#0F111591"   # the player bar
+# player_progress   = "#4F83A3"     # played part of the progress and volume bars
+# player_track      = "#E9E4DC40"   # unplayed part
+
+[font]
+family = "SF Mono"       # any installed font; if it's missing, the first installed of Menlo, JetBrains Mono, DejaVu Sans Mono, Noto Sans Mono, Liberation Mono or Hack
+size   = 13.0            # base size in points; headings scale from it
+lyrics = "SF Mono"       # lyrics typeface; "system" is SF Pro on macOS
+
+[layout]
+radius  = 10             # corner radius of panels and controls, in points
+spacing = 8              # base spacing unit; gaps are multiples of it
+
+[motion]
+reduce = "system"        # "system" follows macOS Reduce Motion; true or false overrides
+
+[palette]
+# Accent shortcuts shown in the theme panel. Click one to make it the accent.
+colors = ["#0F1115", "#090A0B", "#E9E4DC", "#4F83A3", "#5DA9D6", "#A87C9F"]
+
+[lyrics]
+# How lyrics look on the now-playing screen. Uncomment to change.
+# current   = "#6D3A78"     # the line being sung
+# other     = "#80D0D8"     # the other lines
+# highlight = "#4F83A3"     # the word being sung, with word timing (default: accent)
+# size      = 0.8           # text size, relative: 0.5–2
+# align     = "center"      # "left", "center" or "right"
+# position  = "upper"       # where the current line sits: "top", "upper" or "middle"
+# spacing   = 1.5           # line spacing, relative: 0.5–2.5
+# fade      = 0.59          # how much far lines fade: 0 (not at all) to 1
+# animation = "glide"       # how a new line arrives: "glide", "fade", "pop" or "none"
+# speed     = 0.75          # animation speed, relative: 0.25–3 (higher is quicker)
+# bold      = true          # the current line in bold
+
+[visualizer]
+# The audio visualizer under the lyrics (V on the now-playing screen).
+# style       = "mirror"      # "bars", "mirror" or "wave"
+# color       = "#4F83A3"     # gradient bottom (default: accent)
+# color2      = "#E9E4DCE6"   # gradient top (default: foreground)
+# opacity     = 0.91          # 0.1–1
+# bars        = 54            # 12–128
+# height      = 0.26          # share of the right side under the lyrics: 0.15–0.6
+# sensitivity = 1.1           # 0.25–4
+# smoothing   = 0.65          # 0 (jumpy) to 0.95 (slow)
+# glow        = true          # a soft glow behind the bars

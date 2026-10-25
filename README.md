@@ -2,12 +2,15 @@
 
 # Glass
 
-A Spotify player for the Mac that looks like a terminal window made of smoked glass.
+A Spotify player for the Mac and iPhone that looks like a terminal window made of smoked glass.
 
 **[Download the latest version](https://github.com/davishann15-commits/glass-releases/releases/latest)**<br>
 macOS 12 or later, Apple silicon or Intel. Playback needs Spotify Premium.
 
-**[Browse the source](source/)** · **[Build from source](#build-from-source)** · **[Developer guide](source/README.md)**
+**[Get Glass for iPhone](https://github.com/davishann15-commits/glass-releases/releases/tag/ios-v1.0.0-beta.22)** (new)<br>
+iOS 26 or later, iPhone and iPad, installed with SideStore, AltStore, Sideloadly or TrollStore.
+
+**[Browse the source](source/)** · **[Build from source](#build-from-source)** · **[Developer guide](source/README.md)** · **[Glass for iPhone](#glass-for-iphone)**
 
 <br>
 
@@ -74,6 +77,193 @@ source package uses the system library.
 
 Glass's code is [MIT licensed](LICENSE). Third-party components keep their own
 licenses; see [third-party notices](source/packaging/THIRD-PARTY-NOTICES.txt).
+
+## Glass for iPhone
+
+<p align="center">
+<img src="screenshots/iphone/now-playing-lyrics.png" width="260" alt="Glass for iPhone playing Golden Hour: the cover, seek bar and controls at the top, word-synced lyrics below">
+<img src="screenshots/iphone/queue.png" width="260" alt="The queue: Now playing, Next in queue with two songs, and Next from: Late Night Drive, each with a handle to drag">
+<img src="screenshots/iphone/home.png" width="260" alt="Home: the DJ card, recent playlists as tiles and your top artists">
+</p>
+
+The same player, built for touch. Glass for iPhone has everything the Mac app
+has (your library, search, every page, lyrics and translation, the queue,
+Spotify Connect, the DJ, downloads, saving songs as files, Local Files, the theme
+panel and the assistant), and a few things only a phone needs: the lock screen
+and Control Center, swipes, and putting your own music into Apple Music.
+
+### Install on iPhone
+
+Glass isn't on the App Store, so it's installed as an `.ipa`. Download
+`Glass-1.0.0-beta.22.ipa` from the [iPhone release](https://github.com/davishann15-commits/glass-releases/releases/tag/ios-v1.0.0-beta.22), then use one of these:
+
+- **SideStore** or **AltStore**: add the `.ipa` in the app. It's signed with your
+  own Apple ID; with a free Apple ID it has to be refreshed every 7 days, which
+  SideStore and AltStore do for you.
+- **Sideloadly** (on a Mac or PC): connect your iPhone, drop the `.ipa` in, sign
+  in with your Apple ID and install.
+- **TrollStore**: open the `.ipa` with TrollStore. Nothing to refresh.
+
+Then open Glass and sign in with Spotify. Spotify's own sign-in page opens over
+Glass, so Glass never sees your password; your session stays in the iPhone's
+Keychain. Playing music needs Spotify Premium.
+
+### Everything it does
+
+<p align="center">
+<img src="screenshots/iphone/library.png" width="260" alt="Library: Liked Songs, Local Files and playlists in a numbered list, with filter chips and a search field">
+<img src="screenshots/iphone/playlist.png" width="260" alt="A playlist: cover, title, description, pause and shuffle, then its songs">
+<img src="screenshots/iphone/artist.png" width="260" alt="An artist: a large header with monthly listeners, play, shuffle and Following, then popular songs">
+</p>
+
+**Listening**
+
+- **Your library**: playlists, albums, artists, podcasts and audiobooks, with
+  Liked Songs, Your Episodes and Local Files at the top. Sort it, show it as a
+  list, compact list or grid, pin things, keep playlists in folders, filter it to
+  what's downloaded, and search it.
+- **Home**: the DJ, your recent playlists and albums, Jump back in, your top
+  artists, On repeat, your playlists, saved albums and shows.
+- **Search**: songs, artists, albums, playlists and podcasts, with a top result,
+  filters, recent searches and categories to browse.
+- **Every page**: playlists (edit the name, description and cover, reorder, remove
+  songs, select several, make one collaborative, filter and sort), albums,
+  artists (popular songs, the discography, fans also like, appears on), shows and
+  episodes, audiobooks and their chapters, songs, profiles, recents and folders.
+  Long-press anything for its menu: add to a playlist, queue, like, go to the
+  artist or album, start a radio, share, download.
+- **Now Playing**: slide it up from the player bar and pull it down to close.
+  Swipe the artwork for the next or previous song, double-tap it to like the
+  song. Underneath: the lyrics, the queue, the playlist you're playing from, or
+  your devices.
+- **Lyrics**: from LRCLIB, then Spotify, synced by line or by word. Wrong ones?
+  Choose others, and Glass remembers your pick for that song. Running early or
+  late? Nudge the timing for that song. Translations go under each line or
+  replace it, from Spotify, Apple's on-device translation (free, private) or the
+  assistant.
+- **The queue**: "Next in queue" (what you added) and "Next from" (the rest of
+  the playlist or album). Drag a song's ≡ handle to reorder (while it plays on
+  this iPhone). Swipe a song to queue it: to the right in Now Playing, as in
+  Spotify, or to the left anywhere.
+- **Playing from**: the playlist or album you're playing, opened on the song
+  that's playing, so you can jump to any song or swipe songs into the queue.
+- **Spotify Connect**: your iPhone is a Spotify speaker other devices can play
+  to, and Glass controls your other devices: play, skip, seek, volume, move
+  playback between them.
+- **The DJ**: X picks songs and introduces them in X's own voice (or just the
+  music, if you turn the voice off).
+- **In the background**: Glass keeps playing with the phone locked. The lock
+  screen, Control Center, AirPods and Bluetooth controls work. Unplugging
+  headphones pauses, a call or Siri pauses, and if the connection drops after a
+  long time in the background, Glass reconnects and carries on.
+- **Volume**: Glass plays at full level, like other apps, and its volume rail
+  is the iPhone's own volume, so the side buttons move it too.
+- **Downloads**: keep playlists, albums and podcasts on the phone so they start
+  at once and use no data (playing still needs a connection).
+- **Sound**: normalized volume (quiet, normal or loud), gapless playback,
+  autoplay, a six-band equalizer with 22 presets, mono, streaming quality up to
+  320 kbps, and an explicit-content filter.
+- **The visualizer** under the lyrics, following the music played on this iPhone.
+
+<p align="center">
+<img src="screenshots/iphone/playing-from.png" width="260" alt="Now Playing's playlist pane, opened on the song that's playing, Morning Light, near the end of Late Night Drive">
+<img src="screenshots/iphone/local-files.png" width="260" alt="Local Files: import songs, add a folder, rescan, add to Apple Music, and Arch Desktop listed as another device">
+<img src="screenshots/iphone/other-device.png" width="260" alt="Arch Desktop's songs: two picked, songs already on this iPhone marked, and Get at the bottom">
+</p>
+
+**Your own music**
+
+- **Save songs as files**: Share → Download as M4A or MP3 on a song, playlist,
+  album or artist. Files are tagged (title, artists, album, track and disc
+  number, year, cover). The audio comes from JioSaavn or YouTube Music, not from
+  Spotify. A downloaded playlist also becomes a local playlist with the same
+  name, description, cover and order; download it again and it's brought up to
+  date. Please only keep music you have the right to keep.
+- **Local Files**: import songs from the Files app or add whole folders, then
+  browse by album, song, artist or genre, or what's recently added. Make local
+  playlists, edit a song's title, artist, album, year, genre and cover, and
+  local songs in your Spotify playlists play from your files.
+- **Your other devices**: Glass on your other devices, on the same Wi-Fi and
+  signed in to the same Spotify account, shows up in Local Files by itself, with
+  no code to type. Tap one to see its songs, pick the ones you want and get them;
+  or send songs the other way. A playlist's local songs that aren't on this
+  iPhone come from your other devices.
+- **Add to Apple Music**: put Local Files songs (and a whole playlist) into the
+  Music app's library, as your own files, even where Apple Music has the song.
+  It needs the LocalDevVPN app (on the App Store) and a
+  pairing file for your iPhone made once with
+  [idevice_pair](https://github.com/jkcoxson/idevice_pair); the setup is
+  explained in the app. Glass keeps a backup, so you can undo the last add.
+  Based on [ByeTunes](https://github.com/EduAlexxis/ByeTunes) (MIT).
+
+<p align="center">
+<img src="screenshots/iphone/add-to-apple-music.png" width="260" alt="Add to Apple Music: add 2 songs, optionally to a playlist, and the setup">
+<img src="screenshots/iphone/theme.png" width="260" alt="The theme panel's album tab: match colors to the album cover, on Now Playing or everywhere">
+<img src="screenshots/iphone/rose-theme.png" width="260" alt="The library in the rose theme, the bottom bar in the same color">
+</p>
+
+**Make it yours**
+
+- **The theme panel**: presets, every color, how much of the tint covers the
+  glass, the type size, the lyrics' look (colors, size, alignment, animation) and
+  the visualizer's (style, colors, bars, glow). Export your theme to share it, or
+  import one.
+- **Album colors**: Now Playing takes its colors from the album cover, or the
+  whole app does. When the song changes, the new colors bloom out from the cover.
+
+**And the rest**
+
+- **The assistant**: sign in with your ChatGPT plan or use an OpenAI API key. Ask
+  it to play, queue or like songs, or to build a playlist from your library or
+  your local files; it shows a preview first, and the last change can be undone.
+- **The command bar**: search your library, run a command, or start with `?` to
+  ask the assistant. With a keyboard attached (on an iPad, say), the Mac's
+  shortcuts work too.
+- **iPad**: the Mac's side rail, the library and a page side by side, the
+  assistant as a column, and files dragged in from the Files app.
+- **Song-change notifications**, if you want them.
+- **Activity**: everything Glass stores, and every request it makes to Spotify
+  and for lyrics.
+- **VoiceOver**: every gesture has a VoiceOver action too.
+
+<p align="center">
+<img src="screenshots/iphone/search.png" width="260" alt="Search: the search field and categories to browse">
+<img src="screenshots/iphone/settings.png" width="260" alt="Settings: account, appearance and the other sections">
+</p>
+
+### Good to know
+
+- Sharing with the Mac app needs a Mac app built from this version
+  ([`source-ios/`](source-ios/)): Mac Glass 1.0.0-beta.22 still pairs with a
+  code, which the iPhone doesn't do. The next Mac release will match.
+- Add to Apple Music writes to the Music app's library directly. Glass keeps a
+  copy from before each change, but try it first on a phone whose library you
+  can afford to lose.
+- Glass is unofficial and isn't affiliated with Spotify or Apple. It's for
+  personal use.
+
+### Build Glass for iPhone from source
+
+The [`source-ios/`](source-ios/) folder contains the source code of Glass for iPhone
+**1.0.0-beta.22**, the same version as the `.ipa` (development commit
+`495c14c`). It's the whole tree: the iPhone app in `ios/` shares most of its code
+with the Mac app in `src/`. You need a Mac with Xcode 26, Rust with the iOS targets
+and [XcodeGen](https://github.com/yonaskolb/XcodeGen):
+
+```sh
+rustup target add aarch64-apple-ios aarch64-apple-ios-sim
+brew install xcodegen
+git clone https://github.com/davishann15-commits/glass-releases.git
+cd glass-releases/source-ios/ios
+xcodegen generate
+open Glass.xcodeproj    # choose your team under Signing & Capabilities, then Run
+```
+
+The first build compiles the Rust core, which takes a while. See
+[`ios/docs/BUILD.md`](source-ios/ios/docs/BUILD.md) for the simulator, tests and
+release builds. The app's open-source licenses are in Settings → About;
+LAME's source, which the app links, is in
+[`source-ios/vendor/lame-3.100`](source-ios/vendor/lame-3.100).
 
 ## Now Playing
 

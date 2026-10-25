@@ -1,0 +1,164 @@
+[package]
+name = "glass"
+version = "1.0.0-beta.22"
+edition = "2024"
+description = "A Spotify player with synced lyrics, translation and a visualizer (librespot + egui)"
+license = "MIT"
+
+[dependencies]
+eframe = { version = "0.36", default-features = false, features = ["glow", "default_fonts"] }
+# Covers are JPEG (Spotify) or JPEG/PNG (artwork in local files); src/ui/images.rs loads them.
+image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
+# librespot keeps its default TLS (native-tls): on macOS that's the system's,
+# which adds nothing to the binary. Its rustls option would add a second rustls
+# (0.22, through hyper-proxy2) next to reqwest's: 0.8 MB more, measured.
+librespot-core = "0.8"
+librespot-playback = { version = "0.8", features = ["rodio-backend"] }
+librespot-connect = "0.8"
+librespot-oauth = "0.8"
+librespot-metadata = "0.8"
+librespot-protocol = "0.8"
+librespot-audio = "0.8"
+protobuf = "3.7"
+http = "1"
+futures-util = "0.3"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "gzip"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "net", "io-util", "fs"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+directories = "6"
+souvlaki = "0.8"
+# Local files: the formats Local Files lists (see local::EXTENSIONS).
+rodio = { version = "0.21", default-features = false, features = ["playback", "symphonia-mp3", "symphonia-flac", "symphonia-ogg", "symphonia-vorbis", "symphonia-isomp4", "symphonia-aac", "symphonia-alac", "symphonia-wav", "symphonia-pcm", "symphonia-aiff"] }
+lofty = "0.25"
+biquad = "0.6"
+open = "5"
+rfd = "0.17"
+log = "0.4"
+env_logger = { version = "0.11", default-features = false }
+anyhow = "1"
+toml_edit = "0.25"
+serde-saphyr = { version = "2", default-features = false, features = ["deserialize"] }
+memmap2 = "0.9"
+# Verifying the assistant's sign-in (ID tokens from a JWK set; no PEM).
+jsonwebtoken = { version = "9", default-features = false }
+keyring = { version = "3", features = ["apple-native", "sync-secret-service", "crypto-rust"] }
+sha2 = "0.10"
+hmac = "0.12"
+# Updates: release signatures (ed25519) and version order.
+ed25519-dalek = "2"
+semver = "1"
+# Sharing local files with your other Glass devices on the same network:
+# discovery (mDNS) and an encrypted, mutually verified channel (Noise).
+mdns-sd = "0.13"
+snow = "0.9"
+base64 = "0.22"
+rand = "0.8"
+url = "2"
+uuid = { version = "1", features = ["v4"] }
+# Share ▸ "Download as …" (src/save_song): JioSaavn's media URLs are DES-encrypted,
+# AAC is decoded with the symphonia rodio already uses, and MP3s are encoded by LAME,
+# linked as a library of its own (see build.rs).
+des = "0.8"
+ecb = "0.1"
+symphonia = { version = "0.5", default-features = false, features = ["aac", "isomp4"] }
+
+[build-dependencies]
+# Builds LAME from vendor/lame-3.100 on macOS.
+autotools = "0.2.6"
+
+# Linux: windows through X11 or Wayland, whichever the session runs.
+[target.'cfg(target_os = "linux")'.dependencies]
+eframe = { version = "0.36", default-features = false, features = ["x11", "wayland"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# Rust's allocator on macOS (see main.rs).
+mimalloc = { version = "0.1", default-features = false }
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSResponder", "NSView", "NSVisualEffectView", "NSWindow", "NSWorkspace", "NSAccessibility"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSString"] }
+raw-window-handle = "0.6"
+
+[profile.dev.package."*"]
+opt-level = 2
+
+[profile.release]
+lto = "fat"
+codegen-units = 1
+strip = true
+
+# Code that runs now and then, not per frame or per sample, is built for size:
+# protobuf messages, sign-in, config and Lyricsfile parsing, sharing's mDNS and
+# handshake, the keyring, update signatures, the file dialog, media keys and
+# international domain names. Audio, drawing, networking and local-file tags
+# (read for every file in a scan) stay at full speed.
+[profile.release.package.librespot-protocol]
+opt-level = "z"
+[profile.release.package.protobuf]
+opt-level = "z"
+[profile.release.package.librespot-oauth]
+opt-level = "z"
+[profile.release.package.oauth2]
+opt-level = "z"
+[profile.release.package.toml_edit]
+opt-level = "z"
+[profile.release.package.toml_parser]
+opt-level = "z"
+[profile.release.package.toml_datetime]
+opt-level = "z"
+[profile.release.package.winnow]
+opt-level = "z"
+[profile.release.package.serde-saphyr]
+opt-level = "z"
+[profile.release.package.mdns-sd]
+opt-level = "z"
+[profile.release.package.snow]
+opt-level = "z"
+[profile.release.package.keyring]
+opt-level = "z"
+[profile.release.package.jsonwebtoken]
+opt-level = "z"
+[profile.release.package.ed25519-dalek]
+opt-level = "z"
+[profile.release.package.rfd]
+opt-level = "z"
+[profile.release.package.souvlaki]
+opt-level = "z"
+[profile.release.package.idna]
+opt-level = "z"
+[profile.release.package.icu_normalizer]
+opt-level = "z"
+[profile.release.package.icu_properties]
+opt-level = "z"
+
+# ./scripts/bundle.sh: an optimized build for this computer that takes a
+# fraction of the time. Shared builds (DMG, Arch package) use `release`.
+[profile.local]
+inherits = "release"
+lto = "thin"
+codegen-units = 16
+incremental = true
+
+# ios/core builds some of these modules too, with `cfg(glass_mobile)` set.
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(glass_mobile)'] }
+
+[dev-dependencies]
+# Tests sign their own ID tokens with a PEM key.
+jsonwebtoken = { version = "9", features = ["use_pem"] }
+egui_kittest = "0.36"
+rsa = "0.9"
+
+# librespot-playback with Glass's changes: local files (tolerant matching of a
+# playlist's local songs to files, more formats, any sample rate and channel
+# count), immediate pause and seek, an output that stops while paused and can
+# fail without panicking, and the visualizer's tap. See
+# vendor/librespot-playback/GLASS.md.
+[patch.crates-io]
+librespot-playback = { path = "vendor/librespot-playback" }
+# librespot-connect with the DJ (see vendor/librespot-connect/GLASS.md).
+librespot-connect = { path = "vendor/librespot-connect" }
+# librespot-core with idle HTTP connections closed (see vendor/librespot-core/GLASS.md).
+librespot-core = { path = "vendor/librespot-core" }
+# epaint with a narrower font atlas (see vendor/epaint/GLASS.md).
+epaint = { path = "vendor/epaint" }

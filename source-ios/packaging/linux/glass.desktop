@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Glass
+GenericName=Music Player
+Comment=Spotify player with synced lyrics and a visualizer
+Exec=glass
+Icon=glass
+Terminal=false
+Categories=AudioVideo;Audio;Music;Player;
+Keywords=spotify;music;lyrics;player;
+StartupWMClass=glass

@@ -1,0 +1,6 @@
+/target
+/dist
+.DS_Store
+
+# The release tool builds on its own.
+tools/*/target

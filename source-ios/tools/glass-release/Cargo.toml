@@ -1,0 +1,16 @@
+[package]
+name = "glass-release"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "Signs Glass releases (the key stays in the OS credential store)."
+
+[dependencies]
+ed25519-dalek = { version = "2", features = ["rand_core"] }
+rand = "0.8"
+base64 = "0.22"
+sha2 = "0.10"
+keyring = { version = "3", features = ["apple-native", "sync-secret-service", "crypto-rust"] }
+
+# Not part of the app's build.
+[workspace]

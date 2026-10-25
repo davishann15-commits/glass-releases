@@ -1,0 +1,118 @@
+# Xcode project for Glass on iOS. Regenerate Glass.xcodeproj with `xcodegen` (in ios/).
+name: Glass
+options:
+  bundleIdPrefix: app.glass
+  deploymentTarget:
+    iOS: "26.0"
+  createIntermediateGroups: true
+  developmentLanguage: en
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    MARKETING_VERSION: "1.0.0-beta.22"
+    CURRENT_PROJECT_VERSION: "1"
+    ENABLE_USER_SCRIPT_SANDBOXING: NO
+    DEAD_CODE_STRIPPING: YES
+targets:
+  Glass:
+    type: application
+    platform: iOS
+    supportedDestinations: [iOS]
+    sources:
+      - path: Glass
+        excludes:
+          - "**/.DS_Store"
+    dependencies:
+      # The Rust core, put in the build products folder by the "Build Rust core" phase
+      # for the platform and configuration being built.
+      - framework: libglass_core.a
+        implicit: true
+        embed: false
+        link: true
+      - sdk: Security.framework
+      - sdk: SystemConfiguration.framework
+      - sdk: CoreAudio.framework
+      - sdk: AudioToolbox.framework
+      - sdk: AVFoundation.framework
+      - sdk: MediaPlayer.framework
+      - sdk: AuthenticationServices.framework
+      - sdk: libresolv.tbd
+      - sdk: libc++.tbd
+      # Add to Apple Music: the music library is edited with the system's SQLite.
+      - sdk: libsqlite3.tbd
+    preBuildScripts:
+      - name: Build Rust core
+        basedOnDependencyAnalysis: false
+        outputFiles:
+          - $(BUILT_PRODUCTS_DIR)/libglass_core.a
+        shell: /bin/bash
+        script: |
+          case "$PLATFORM_NAME" in iphonesimulator) W=sim ;; *) W=device ;; esac
+          case "$CONFIGURATION" in Release) P=release ;; *) P=debug ;; esac
+          "$SRCROOT/scripts/build-core.sh" "$W" "$P"
+    info:
+      path: Glass/Info.plist
+      properties:
+        CFBundleDisplayName: Glass
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        UILaunchScreen:
+          UIColorName: LaunchBackground
+        UIApplicationSceneManifest:
+          UIApplicationSupportsMultipleScenes: false
+        UIUserInterfaceStyle: Dark
+        UIStatusBarStyle: UIStatusBarStyleLightContent
+        UISupportedInterfaceOrientations:
+          [UIInterfaceOrientationPortrait, UIInterfaceOrientationLandscapeLeft, UIInterfaceOrientationLandscapeRight]
+        UISupportedInterfaceOrientations~ipad:
+          [UIInterfaceOrientationPortrait, UIInterfaceOrientationPortraitUpsideDown, UIInterfaceOrientationLandscapeLeft, UIInterfaceOrientationLandscapeRight]
+        UIBackgroundModes: [audio]
+        UIFileSharingEnabled: true
+        LSSupportsOpeningDocumentsInPlace: true
+        NSLocalNetworkUsageDescription: Glass uses your local network to find Glass on your other devices and share songs with them, and to add songs to Apple Music.
+        NSBonjourServices: [_glass-files._tcp, _remotepairing._tcp]
+        CFBundleURLTypes:
+          - CFBundleURLName: app.glass.ios.signin
+            CFBundleURLSchemes: [glass-ios]
+        ITSAppUsesNonExemptEncryption: false
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: app.glass.ios
+        PRODUCT_NAME: Glass
+        TARGETED_DEVICE_FAMILY: "1,2"
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
+        CODE_SIGN_STYLE: Automatic
+        SUPPORTS_MACCATALYST: NO
+        SUPPORTS_XR_DESIGNED_FOR_IPHONE_IPAD: NO
+        OTHER_LDFLAGS: ["-ObjC"]
+        SWIFT_INCLUDE_PATHS: $(SRCROOT)/build/headers
+        HEADER_SEARCH_PATHS: $(SRCROOT)/build/headers
+        LIBRARY_SEARCH_PATHS: $(BUILT_PRODUCTS_DIR)
+  GlassUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources:
+      - path: GlassUITests
+    dependencies:
+      - target: Glass
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: app.glass.ios.uitests
+        GENERATE_INFOPLIST_FILE: YES
+        TEST_TARGET_NAME: Glass
+        CODE_SIGN_STYLE: Automatic
+        TARGETED_DEVICE_FAMILY: "1,2"
+schemes:
+  Glass:
+    build:
+      targets:
+        Glass: all
+        GlassUITests: [test]
+    run:
+      config: Debug
+    test:
+      config: Debug
+      targets: [GlassUITests]
+    archive:
+      config: Release

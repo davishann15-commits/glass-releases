@@ -1,0 +1,15 @@
+[package]
+name = "glass-bindgen"
+version = "0.0.0"
+edition = "2024"
+publish = false
+description = "Runs UniFFI's binding generator (host only) for ios/core: see ios/scripts/build-core.sh"
+
+[workspace]
+
+[[bin]]
+name = "uniffi-bindgen"
+path = "src/main.rs"
+
+[dependencies]
+uniffi = { version = "0.32", features = ["cli"] }
