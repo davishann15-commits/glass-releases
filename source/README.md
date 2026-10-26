@@ -438,10 +438,15 @@ settings. Glass can't see your ChatGPT conversations.
   effect. Settings → Appearance shows which one is active.
 - **Reduce Transparency** (System Settings → Accessibility) makes the window
   opaque; **Reduce Motion** turns off animations unless the theme says otherwise.
-- **Linux** (untested): transparency only — blur depends on your compositor
-  (KWin, Hyprland, picom rules). Without one, Glass keeps the background at
-  least 88% opaque for legibility; set `GLASS_LINUX_BLUR=1` if your
-  compositor blurs Glass.
+- **Linux** (Wayland): Glass asks the compositor to blur what's behind it
+  (ext-background-effect-v1: Hyprland, KWin and others that support it).
+  How strongly it blurs is the compositor's setting — on Hyprland,
+  `decoration:blur` size 7 with 2 passes looks like the Mac's 28 pt — so
+  `blur` only turns it on or off. Without compositor blur (X11, or a
+  compositor without the protocol), Glass keeps the background at least 88%
+  opaque for legibility; set `GLASS_LINUX_BLUR=1` if your compositor blurs
+  Glass anyway (picom rules), or `0` if it doesn't. The Mac's window buttons
+  (close, minimize, zoom) are drawn in the title strip.
 
 ## How it works
 

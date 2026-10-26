@@ -186,6 +186,9 @@ fn title_strip(app: &mut App, ui: &mut Ui, strip: Rect) {
         let maxed = ui.ctx().input(|i| i.viewport().maximized.unwrap_or(false));
         ui.ctx().send_viewport_cmd(egui::ViewportCommand::Maximized(!maxed));
     }
+    // macOS draws its own window buttons in this corner.
+    #[cfg(not(target_os = "macos"))]
+    window_buttons(ui, strip);
     let path = match &app.route {
         Route::Library => "music",
         Route::NowPlaying => "music / now-playing",
@@ -288,6 +291,59 @@ fn title_strip(app: &mut App, ui: &mut Ui, strip: Rect) {
         if resp.clicked() {
             app.settings.visualizer = !on;
             app.mark_settings_dirty();
+        }
+    }
+}
+
+/// Close, minimize and zoom, where and how the Mac's window buttons sit in
+/// the title strip: grey while the window isn't focused, symbols while the
+/// pointer is over them.
+#[cfg(not(target_os = "macos"))]
+fn window_buttons(ui: &mut Ui, strip: Rect) {
+    use egui::Color32;
+    // AppKit's metrics, in points: they don't follow the theme's font size.
+    const D: f32 = 12.0;
+    const COLORS: [Color32; 3] = [Color32::from_rgb(0xFF, 0x5F, 0x57), Color32::from_rgb(0xFE, 0xBC, 0x2E), Color32::from_rgb(0x28, 0xC8, 0x40)];
+    const TIPS: [&str; 3] = ["Close", "Minimize", "Zoom"];
+    let centers: [egui::Pos2; 3] = std::array::from_fn(|i| pos2(strip.left() + 14.0 + 20.0 * i as f32, strip.top() + 14.0));
+    let group = Rect::from_min_max(centers[0], centers[2]).expand(D / 2.0 + 4.0);
+    let show_symbols = ui.rect_contains_pointer(group);
+    let focused = ui.ctx().input(|i| i.viewport().focused.unwrap_or(true));
+    let symbol = Stroke::new(1.1, Color32::from_black_alpha(150));
+    for (i, c) in centers.into_iter().enumerate() {
+        let resp = ui.interact(Rect::from_center_size(c, vec2(D + 6.0, D + 6.0)), ui.id().with(("window-button", i)), Sense::click());
+        resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, TIPS[i]));
+        let fill = if focused || show_symbols { COLORS[i] } else { Color32::from_white_alpha(46) };
+        let fill = if resp.is_pointer_button_down_on() { fill.lerp_to_gamma(Color32::BLACK, 0.2) } else { fill };
+        ui.painter().circle(c, D / 2.0, fill, Stroke::new(0.5, Color32::from_black_alpha(if focused { 50 } else { 20 })));
+        if show_symbols {
+            let a = 3.0;
+            match i {
+                0 => {
+                    ui.painter().line_segment([c + vec2(-a, -a), c + vec2(a, a)], symbol);
+                    ui.painter().line_segment([c + vec2(-a, a), c + vec2(a, -a)], symbol);
+                }
+                1 => {
+                    ui.painter().line_segment([c + vec2(-a - 0.5, 0.0), c + vec2(a + 0.5, 0.0)], symbol);
+                }
+                _ => {
+                    // Two corners pointing apart, like the Mac's full-screen arrows.
+                    let fill = symbol.color;
+                    ui.painter().add(egui::Shape::convex_polygon(vec![c + vec2(-3.5, -3.5), c + vec2(1.5, -3.5), c + vec2(-3.5, 1.5)], fill, Stroke::NONE));
+                    ui.painter().add(egui::Shape::convex_polygon(vec![c + vec2(3.5, 3.5), c + vec2(-1.5, 3.5), c + vec2(3.5, -1.5)], fill, Stroke::NONE));
+                }
+            }
+        }
+        if resp.clicked() {
+            let ctx = ui.ctx();
+            match i {
+                0 => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
+                1 => ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true)),
+                _ => {
+                    let maxed = ctx.input(|i| i.viewport().maximized.unwrap_or(false));
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(!maxed));
+                }
+            }
         }
     }
 }

@@ -299,7 +299,7 @@ fn install_fonts(ctx: &egui::Context, family: &str, lyrics: &str) {
     let mut files = font_files(family);
     if files.regular.is_none() {
         // The default (SF Mono) is macOS's; elsewhere use the first monospace font installed.
-        for name in ["Menlo", "JetBrains Mono", "DejaVu Sans Mono", "Noto Sans Mono", "Liberation Mono", "Hack"] {
+        for name in ["Menlo", "JetBrains Mono", "JetBrainsMono Nerd Font Mono", "DejaVu Sans Mono", "Noto Sans Mono", "Liberation Mono", "Hack"] {
             files = font_files(name);
             if files.regular.is_some() {
                 log::info!("font {family:?} isn't installed; using {name}");

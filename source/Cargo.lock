@@ -1895,6 +1895,9 @@ dependencies = [
  "toml_edit",
  "url",
  "uuid",
+ "wayland-backend",
+ "wayland-client",
+ "wayland-protocols",
 ]
 
 [[package]]

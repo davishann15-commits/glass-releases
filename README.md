@@ -55,7 +55,7 @@ once you've signed in to it.
 
 The [`source/`](source/) folder contains the Glass **1.0.0-beta.22** source code, the same
 version as the latest app release. The source was published from development
-commit `b403e2aec0047a18203ccdd04fe0ab38365dd8f7`.
+commit `8494d8210eb5abab41f93151bb39abb92d697110`.
 
 Install stable Rust with [rustup](https://rustup.rs). On macOS, also install
 Apple's command-line developer tools (`xcode-select --install`), Autoconf,
