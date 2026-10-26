@@ -10,7 +10,10 @@ macOS 12 or later, Apple silicon or Intel. Playback needs Spotify Premium.
 **[Get Glass for iPhone](https://github.com/davishann15-commits/glass-releases/releases/tag/ios-v1.0.0-beta.22)** (new)<br>
 iOS 26 or later, iPhone and iPad, installed with SideStore, AltStore, Sideloadly or TrollStore.
 
-**[Browse the source](source/)** · **[Build from source](#build-from-source)** · **[Developer guide](source/README.md)** · **[Glass for iPhone](#glass-for-iphone)**
+**[Get Glass for Arch Linux](https://github.com/davishann15-commits/glass-releases/releases/tag/arch-v1.0.0-beta.22)** (new)<br>
+A pacman package for x86_64, Wayland or X11; the PKGBUILD builds it anywhere else.
+
+**[Browse the source](source/)** · **[Build from source](#build-from-source)** · **[Developer guide](source/README.md)** · **[Glass for iPhone](#glass-for-iphone)** · **[Arch Linux](#install-on-arch-linux)**
 
 <br>
 
@@ -46,6 +49,23 @@ Glass keeps itself up to date after that. New versions download in the
 background and install the next time you quit. Each one is signed, and Glass
 won't install anything whose signature doesn't check out. Settings → Updates
 turns this off.
+
+### Install on Arch Linux
+
+Download the package from the
+[Arch Linux release](https://github.com/davishann15-commits/glass-releases/releases/tag/arch-v1.0.0-beta.22)
+and install it with pacman:
+
+```sh
+curl -LO https://github.com/davishann15-commits/glass-releases/releases/download/arch-v1.0.0-beta.22/glass-1.0.0beta22-1-x86_64.pkg.tar.zst
+sudo pacman -U glass-1.0.0beta22-1-x86_64.pkg.tar.zst
+```
+
+Or put the release's `PKGBUILD` in an empty folder and run `makepkg -si` there
+to build it from this repository's source. On a Wayland compositor that blurs
+behind windows (Hyprland, KWin), the window is see-through and blurred like the
+Mac's. Glass says when a new version is out; install it the same way. It isn't
+in the AUR yet, because Arch has closed new AUR accounts for now.
 
 Lyrics translation is optional. It uses Spotify's own translation when there
 is one, Apple's on-device translation on macOS 26 and later, or the assistant
