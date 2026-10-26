@@ -436,4 +436,64 @@ impl<'ct> ConnectState {
         }
         self.update_restrictions();
     }
+
+    /// Glass: whether a track listed next is a song to show (not a delimiter or one
+    /// that can't play).
+    fn glass_shown(t: &ProvidedTrack) -> bool {
+        !t.uid.starts_with(IDENTIFIER_DELIMITER) && !t.is_unavailable() && !t.uri.is_empty()
+    }
+
+    /// Glass: the songs listed next, each with whether the user queued it.
+    pub fn glass_upcoming(&self) -> Vec<(String, bool)> {
+        self.next_tracks()
+            .iter()
+            .filter(|t| Self::glass_shown(t))
+            .map(|t| (t.uri.clone(), t.is_queue()))
+            .collect()
+    }
+
+    /// Glass: moves the song at `from` in `glass_upcoming`'s list to `to` (its index
+    /// after the move). `uri` is the song meant: when the list changed meanwhile, its
+    /// first listing is moved instead. Queued songs stay ahead of the rest, as in
+    /// Spotify's apps: a song from the context moved in among them becomes queued, and
+    /// a queued one moved below them stays the last queued. False when the song isn't
+    /// listed any more.
+    pub fn glass_move_next(&mut self, uri: &str, from: usize, to: usize) -> bool {
+        let listed = |s: &Self| -> Vec<usize> {
+            s.next_tracks()
+                .iter()
+                .enumerate()
+                .filter(|(_, t)| Self::glass_shown(t))
+                .map(|(i, _)| i)
+                .collect()
+        };
+        let shown = listed(self);
+        let raw_from = match shown.get(from) {
+            Some(&i) if self.next_tracks()[i].uri == uri => i,
+            _ => match shown.iter().find(|&&i| self.next_tracks()[i].uri == uri) {
+                Some(&i) => i,
+                None => return false,
+            },
+        };
+        let mut track = self.next_tracks_mut().remove(raw_from);
+        let shown = listed(self);
+        // Before the song now listed at `to`, or after the last one listed.
+        let mut at = match shown.get(to) {
+            Some(&i) => i,
+            None => shown.last().map_or(0, |&i| i + 1),
+        };
+        let queued = self.next_tracks().iter().take_while(|t| t.is_queue()).count();
+        if track.is_queue() {
+            at = at.min(queued);
+        } else if at < queued {
+            track.uid = format!("q{}", self.queue_count);
+            self.queue_count += 1;
+            track.set_provider(Provider::Queue);
+            track.set_from_queue(true);
+        }
+        self.next_tracks_mut().insert(at, track);
+        self.update_queue_revision();
+        self.update_restrictions();
+        true
+    }
 }

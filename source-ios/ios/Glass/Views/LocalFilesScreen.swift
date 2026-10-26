@@ -10,8 +10,10 @@ import PhotosUI
 struct LocalFilesScreen: View {
     @Environment(Store.self) private var store
     @State private var filter = ""
-    @State private var importing = false
-    @State private var addingFolder = false
+    /// The Files picker: songs to import, or a folder to read where it is (one picker
+    /// for both: two on the same view aren't reliable in SwiftUI).
+    @State private var picking = false
+    @State private var pickingFolder = false
     @State private var songSort: SongSort = .artist
     @State private var descending = false
     @State private var artist: String?
@@ -39,18 +41,20 @@ struct LocalFilesScreen: View {
         }
         .scrollIndicators(.hidden)
         .scrollDismissesKeyboard(.interactively)
-        .refreshable { store.core.rescanLocal() }
+        .refreshable { LocalImport.rescan(store: store) }
         .safeAreaInset(edge: .bottom) {
             if store.appleMusicPicks != nil, let lib {
                 AppleMusicPickBar(shown: view == .playlists ? [] : shownPaths(lib))
             }
         }
         .glassNav("music / local")
-        .fileImporter(isPresented: $importing, allowedContentTypes: Self.audioTypes, allowsMultipleSelection: true) { r in
-            if case let .success(urls) = r { LocalImport.importFiles(urls, store: store) }
-        }
-        .fileImporter(isPresented: $addingFolder, allowedContentTypes: [.folder], allowsMultipleSelection: false) { r in
-            if case let .success(urls) = r, let u = urls.first { LocalImport.addFolder(u, store: store) }
+        .fileImporter(isPresented: $picking, allowedContentTypes: pickingFolder ? [.folder] : Self.audioTypes, allowsMultipleSelection: !pickingFolder) { r in
+            guard case let .success(urls) = r else { return }
+            if pickingFolder {
+                if let u = urls.first { LocalImport.addFolder(u, store: store) }
+            } else {
+                LocalImport.importFiles(urls, store: store)
+            }
         }
         .sheet(item: Binding(get: { editing.map { EditPath(path: $0) } }, set: { editing = $0?.path })) { e in
             TagEditor(path: e.path).environment(store)
@@ -77,9 +81,9 @@ struct LocalFilesScreen: View {
                     }
                     .accessibilityLabel("Play the list shown")
                 }
-                BracketButton(title: "import songs") { importing = true }
-                BracketButton(title: "add a folder") { addingFolder = true }
-                BracketButton(title: "rescan") { store.core.rescanLocal() }
+                BracketButton(title: "import songs") { pickingFolder = false; picking = true }
+                BracketButton(title: "add a folder") { pickingFolder = true; picking = true }
+                BracketButton(title: "rescan") { LocalImport.rescan(store: store) }
                 if let lib, !lib.songs.isEmpty, store.appleMusicPicks == nil {
                     BracketButton(title: "add to Apple Music", icon: "music.note") { store.appleMusicPicks = [] }
                         .accessibilityHint("Pick songs to put in the Music app's library")
@@ -90,6 +94,14 @@ struct LocalFilesScreen: View {
             }
             if let lib {
                 Text("Showing songs from: " + (lib.sources.isEmpty ? "no folders" : lib.sources.map(LocalImport.display).joined(separator: ", "))).gFont(11.5).foregroundStyle(look.muted)
+            }
+            if !CloudSongs.shared.waiting.isEmpty {
+                let n = CloudSongs.shared.waiting.count
+                HStack(spacing: 6) {
+                    ProgressView().controlSize(.mini)
+                    Text("Downloading \(n == 1 ? "1 song" : "\(n) songs") to this iPhone…").gFont(11.5).foregroundStyle(look.sub)
+                }
+                .accessibilityElement(children: .combine)
             }
             ShareStrip()
         }
@@ -563,46 +575,54 @@ enum LocalImport {
     }
 
     /// A folder from Files is read where it is (tag edits change its files): kept as a
-    /// security-scoped bookmark, opened again at each launch.
+    /// security-scoped bookmark (`PickedFolders`), opened again at each launch. Its songs
+    /// that are only in iCloud are downloaded.
     @MainActor static func addFolder(_ url: URL, store: Store) {
         guard url.startAccessingSecurityScopedResource() else {
-            store.show(toast: "Glass wasn't given access to that folder")
+            store.show(toast: "Glass couldn't open that folder. Try picking it again.")
             return
         }
-        if let data = try? url.bookmarkData(options: [], includingResourceValuesForKeys: nil, relativeTo: nil) {
-            var marks = UserDefaults.standard.array(forKey: key) as? [Data] ?? []
-            marks.append(data)
-            UserDefaults.standard.set(marks, forKey: key)
+        if inGlass(url.path) {
+            store.core.rescanLocal()
+            store.show(toast: "That folder is already in Local Files (it's in Glass's own folder)")
+            return
         }
+        PickedFolders.keep(url, source: true)
         store.core.filesAdded(dirs: [url.path])
-        store.show(toast: "Now showing songs from \(url.lastPathComponent)")
+        CloudSongs.shared.fetch([url], store: store)
+        store.show(toast: "Now showing songs from \(display(url.path))")
     }
 
-    private static let key = "localFolderBookmarks"
-
-    /// At launch: open the folders added from Files again (bookmarks can go stale when a
-    /// folder moves; they're refreshed, or dropped when the folder is gone).
-    @MainActor static func restoreFolders(store: Store) {
-        var marks = UserDefaults.standard.array(forKey: key) as? [Data] ?? []
-        var paths: [String] = []
-        marks = marks.compactMap { data in
-            var stale = false
-            guard let url = try? URL(resolvingBookmarkData: data, options: [], relativeTo: nil, bookmarkDataIsStale: &stale) else { return nil }
-            guard url.startAccessingSecurityScopedResource() else { return nil }
-            paths.append(url.path)
-            if stale, let fresh = try? url.bookmarkData(options: [], includingResourceValuesForKeys: nil, relativeTo: nil) { return fresh }
-            return data
-        }
-        UserDefaults.standard.set(marks, forKey: key)
-        if !paths.isEmpty { store.core.filesAdded(dirs: paths) }
+    /// Reads Local Files again, downloading any songs in picked folders that are only in iCloud.
+    @MainActor static func rescan(store: Store) {
+        store.core.rescanLocal()
+        CloudSongs.shared.fetch(PickedFolders.sources, store: store)
     }
 
+    private static var documents: String {
+        PickedFolders.plain(FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].path)
+    }
+
+    /// In Glass's own folder (Files › On My iPhone › Glass), which Local Files always reads.
+    static func inGlass(_ path: String) -> Bool {
+        let p = PickedFolders.plain(path)
+        return p == documents || p.hasPrefix(documents + "/")
+    }
+
+    /// A folder as the Files app names it: "On My iPhone › Glass › Imported",
+    /// "iCloud Drive › Music", or the folder's own name.
     static func display(_ path: String) -> String {
-        if let r = path.range(of: "/Documents") , path.hasSuffix("/Documents") || path.contains("/Documents/") {
-            let rest = path[r.upperBound...]
-            return "On My iPhone › Glass" + rest.replacingOccurrences(of: "/", with: " › ")
+        let p = PickedFolders.plain(path)
+        if inGlass(p) {
+            return "On My iPhone › Glass" + p.dropFirst(documents.count).replacingOccurrences(of: "/", with: " › ")
         }
-        return URL(fileURLWithPath: path).lastPathComponent
+        if let r = p.range(of: "/Mobile Documents/com~apple~CloudDocs") {
+            return "iCloud Drive" + p[r.upperBound...].replacingOccurrences(of: "/", with: " › ")
+        }
+        // On My iPhone's own folders are in "File Provider Storage".
+        if p.hasSuffix("/File Provider Storage") { return "On My iPhone" }
+        let url = URL(fileURLWithPath: path)
+        return (try? url.resourceValues(forKeys: [.localizedNameKey]))?.localizedName ?? url.lastPathComponent
     }
 }
 
@@ -744,8 +764,10 @@ struct ShareStrip: View {
         let look = Look.shared
         if let sh = store.share, sh.on {
             VStack(alignment: .leading, spacing: 4) {
-                if sh.error != nil {
-                    Text("Glass can't look for your other devices. Allow Local Network for Glass in Settings › Privacy & Security.").gFont(11.5).foregroundStyle(look.sub)
+                if let e = sh.error {
+                    Text(e).gFont(11.5).foregroundStyle(look.sub)
+                } else if sh.peers.isEmpty, sh.notes.isEmpty {
+                    Text("Glass on your other devices (a Mac, a PC or another iPhone) shows up here when it's open on the same Wi-Fi and signed in to this Spotify account.").gFont(11.5).foregroundStyle(look.muted)
                 } else if !sh.peers.isEmpty {
                     ForEach(sh.peers, id: \.id) { p in
                         Button { store.push(.device(id: p.id, name: p.name)) } label: {
@@ -764,6 +786,9 @@ struct ShareStrip: View {
                         .buttonStyle(.plain)
                         .accessibilityHint("Shows the songs on \(p.name)")
                     }
+                }
+                ForEach(sh.notes, id: \.self) { n in
+                    Text(n).gFont(11.5).foregroundStyle(look.sub)
                 }
                 ForEach(Array(sh.transfers.enumerated()), id: \.offset) { _, t in
                     HStack {

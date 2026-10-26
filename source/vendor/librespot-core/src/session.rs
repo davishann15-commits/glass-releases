@@ -3,7 +3,6 @@ use std::{
     future::Future,
     io,
     pin::Pin,
-    process::exit,
     sync::{Arc, OnceLock, RwLock, Weak},
     task::{Context, Poll},
     time::{Duration, SystemTime, UNIX_EPOCH},
@@ -361,14 +360,13 @@ impl Session {
         );
     }
 
+    // Glass: upstream exits the whole process here for an account that isn't Premium.
+    // A free account still signs in and browses (Spotify's data services take it);
+    // only streaming needs Premium, and Glass checks that itself.
     fn check_catalogue(attributes: &UserAttributes) {
         if let Some(account_type) = attributes.get("type") {
             if account_type != "premium" {
-                error!("librespot does not support {account_type:?} accounts.");
-                info!("Please support Spotify and your artists and sign up for a premium account.");
-
-                // TODO: logout instead of exiting
-                exit(1);
+                info!("A {account_type:?} account: Spotify streams only to Premium accounts.");
             }
         }
     }

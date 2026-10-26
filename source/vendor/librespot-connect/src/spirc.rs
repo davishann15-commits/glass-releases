@@ -109,6 +109,9 @@ struct SpircTask {
     update_state: bool,
 
     spirc_id: usize,
+
+    /// Glass: the app was told this task's loop ended (see `run`).
+    glass_lost_reported: bool,
 }
 
 static SPIRC_COUNTER: AtomicUsize = AtomicUsize::new(0);
@@ -132,6 +135,8 @@ enum SpircCommand {
     Activate,
     Transfer(Option<TransferRequest>),
     Load(LoadRequest),
+    /// Glass: move a song listed next (see `ConnectState::glass_move_next`).
+    GlassMoveNext { uri: String, from: usize, to: usize },
 }
 
 const CONTEXT_FETCH_THRESHOLD: usize = 2;
@@ -144,6 +149,8 @@ const UPDATE_STATE_DELAY: Duration = Duration::from_millis(200);
 /// The spotify connect handle
 pub struct Spirc {
     commands: mpsc::UnboundedSender<SpircCommand>,
+    /// Glass: this device's task, as `glass::set_queue_hook` names it.
+    glass_id: usize,
 }
 
 impl Spirc {
@@ -255,9 +262,10 @@ impl Spirc {
             update_state: false,
 
             spirc_id,
+            glass_lost_reported: false,
         };
 
-        let spirc = Spirc { commands: cmd_tx };
+        let spirc = Spirc { commands: cmd_tx, glass_id: spirc_id };
 
         let initial_volume = task.connect_state.device_info().volume;
         task.connect_state.set_volume(0);
@@ -281,6 +289,19 @@ impl Spirc {
     /// bring the future initially returned to an end.
     pub fn shutdown(&self) -> Result<(), Error> {
         Ok(self.commands.send(SpircCommand::Shutdown)?)
+    }
+
+    /// Glass: this device's id in `glass::set_queue_hook`'s reports.
+    pub fn glass_id(&self) -> usize {
+        self.glass_id
+    }
+
+    /// Glass: moves the song listed next at `from` to `to` (indices into the list
+    /// `glass::set_queue_hook` reports; `uri` makes sure it's the song meant).
+    ///
+    /// Does nothing if we are not the active device.
+    pub fn glass_move_next(&self, uri: String, from: usize, to: usize) -> Result<(), Error> {
+        Ok(self.commands.send(SpircCommand::GlassMoveNext { uri, from, to })?)
     }
 
     /// Resumes the playback
@@ -564,6 +585,16 @@ impl SpircTask {
             }
         }
 
+        // Glass: say at once that this device is gone when the loop ended on its own (the
+        // session or a dealer stream died). The clean-up below needs the network, which
+        // may be what just went away; librespot's own event (in `handle_disconnect`)
+        // came only after it worked, so the app went on sending commands to a closed
+        // task ("Internal error { channel closed }").
+        if !self.shutdown {
+            self.player.emit_session_disconnected_event(self.session.connection_id(), self.session.username());
+            self.glass_lost_reported = true;
+        }
+
         if !self.shutdown && self.connect_state.is_active() {
             warn!("unexpected shutdown");
             if let Err(why) = self.handle_disconnect().await {
@@ -635,11 +666,14 @@ impl SpircTask {
             SpircCommand::Shutdown => {
                 trace!("Received SpircCommand::Shutdown");
                 self.handle_pause();
-                self.handle_disconnect().await?;
+                // Glass: shut down even when telling Spotify fails (no network): the loop
+                // used to go on, its player with it.
+                let disconnected = self.handle_disconnect().await;
                 self.shutdown = true;
                 if let Some(rx) = self.commands.as_mut() {
                     rx.close()
                 }
+                disconnected?;
             }
             SpircCommand::Transfer(request) if !self.connect_state.is_active() => {
                 let device_id = self.session.device_id();
@@ -679,6 +713,11 @@ impl SpircTask {
             SpircCommand::SetPosition(position) => self.handle_seek(position),
             SpircCommand::SetVolume(volume) => self.set_volume(volume),
             SpircCommand::Load(command) => self.handle_load(command, None, None).await?,
+            SpircCommand::GlassMoveNext { uri, from, to } => {
+                if !self.connect_state.glass_move_next(&uri, from, to) {
+                    debug!("{uri} isn't listed next any more; not moved");
+                }
+            }
         };
 
         self.notify().await
@@ -1226,8 +1265,11 @@ impl SpircTask {
 
         self.connect_state.became_inactive(&self.session).await?;
 
-        self.player
-            .emit_session_disconnected_event(self.session.connection_id(), self.session.username());
+        // Glass: not twice (see `run`).
+        if !self.glass_lost_reported {
+            self.player
+                .emit_session_disconnected_event(self.session.connection_id(), self.session.username());
+        }
 
         Ok(())
     }
@@ -1809,6 +1851,9 @@ impl SpircTask {
     }
 
     async fn notify(&mut self) -> Result<(), Error> {
+        // Glass: what's next, for the app's queue (before sending, which may fail).
+        crate::glass::queue_changed(self.spirc_id, self.connect_state.glass_upcoming());
+
         self.connect_state.set_status(&self.play_status);
 
         if self.connect_state.is_playing() {

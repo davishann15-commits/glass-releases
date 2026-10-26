@@ -92,6 +92,9 @@ pub fn user_agent(contact: &str) -> String {
     match (contact.is_empty(), home) {
         (false, _) => format!("Glass/{version} ({contact})"),
         (true, Some(h)) => format!("Glass/{version} ({h})"),
+        #[cfg(glass_mobile)]
+        (true, None) => format!("Glass/{version} (iPhone music player)"),
+        #[cfg(not(glass_mobile))]
         (true, None) => format!("Glass/{version} (desktop music player)"),
     }
 }

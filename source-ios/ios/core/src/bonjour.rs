@@ -8,7 +8,7 @@
 //! Callbacks run on a private serial dispatch queue; every DNSServiceRef is created,
 //! served and deallocated there or under its lock. What's found goes out on a channel.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::ffi::{CStr, CString, c_char, c_void};
 use std::net::IpAddr;
 use std::sync::{Arc, Mutex};
@@ -35,6 +35,8 @@ const PROTO_V4: u32 = 0x1;
 const PROTO_V6: u32 = 0x2;
 const AF_INET: u8 = 2;
 const AF_INET6: u8 = 30;
+/// kDNSServiceErr_PolicyDenied: the user didn't allow Glass on the local network.
+const POLICY_DENIED: i32 = -65570;
 
 unsafe extern "C" {
     fn DNSServiceRegister(sd: *mut DNSServiceRef, flags: u32, iface: u32, name: *const c_char, regtype: *const c_char, domain: *const c_char, host: *const c_char, port: u16, txt_len: u16, txt: *const c_void, cb: RegisterReply, ctx: *mut c_void) -> i32;
@@ -54,6 +56,8 @@ unsafe extern "C" {
 pub enum Found {
     Service { instance: String, txt: HashMap<String, String>, port: u16, addrs: Vec<IpAddr> },
     Gone { instance: String },
+    /// Local network access isn't allowed (Settings › Privacy & Security › Local Network).
+    Denied,
 }
 
 /// A service being resolved: its TXT and port once resolved, then its addresses.
@@ -61,6 +65,8 @@ pub enum Found {
 struct Pending {
     /// The lookups' shared context box (`Ctx`), freed with them.
     ctx: usize,
+    /// The network interfaces it was found on (it's gone when it's left all of them).
+    ifaces: HashSet<u32>,
     resolve: usize,
     addr: usize,
     txt: HashMap<String, String>,
@@ -137,35 +143,48 @@ extern "C" fn on_register(_: DNSServiceRef, _: u32, err: i32, _: *const c_char, 
 }
 
 extern "C" fn on_browse(_: DNSServiceRef, flags: u32, iface: u32, err: i32, name: *const c_char, regtype: *const c_char, domain: *const c_char, ctx: *mut c_void) {
-    if err != 0 {
-        log::warn!("Bonjour: browsing failed ({err})");
-        return;
-    }
     // SAFETY: the browse context lives until the browse ref is deallocated.
     let inner = unsafe { &*(ctx as *const Arc<Inner>) }.clone();
-    let instance = cstr(name);
-    if flags & FLAG_ADD == 0 {
-        stop_lookups(&inner, &instance);
-        let _ = inner.tx.send(Found::Gone { instance });
+    if err != 0 {
+        log::warn!("Bonjour: browsing failed ({err})");
+        if err == POLICY_DENIED {
+            let _ = inner.tx.send(Found::Denied);
+        }
         return;
     }
-    if inner.pending.lock().unwrap().contains_key(&instance) {
+    let instance = cstr(name);
+    if flags & FLAG_ADD == 0 {
+        // Gone from this interface (Wi-Fi, say), maybe not from the others.
+        let left = inner.pending.lock().unwrap().get_mut(&instance).is_some_and(|p| {
+            p.ifaces.remove(&iface);
+            !p.ifaces.is_empty()
+        });
+        if !left {
+            stop_lookups(&inner, &instance);
+            let _ = inner.tx.send(Found::Gone { instance });
+        }
+        return;
+    }
+    if let Some(p) = inner.pending.lock().unwrap().get_mut(&instance) {
+        p.ifaces.insert(iface);
         return;
     }
     let c = Box::into_raw(Box::new(Ctx { inner: inner.clone(), instance: instance.clone() }));
     let mut sd: DNSServiceRef = std::ptr::null_mut();
+    // Resolved on any interface, not just the one it was first seen on: that can be
+    // one its addresses never come from (a VPN's, say), and nothing would be found.
     // SAFETY: valid C strings from the browse reply; the context box outlives the ref.
-    let e = unsafe { DNSServiceResolve(&mut sd, 0, iface, name, regtype, domain, on_resolve, c as *mut c_void) };
+    let e = unsafe { DNSServiceResolve(&mut sd, 0, 0, name, regtype, domain, on_resolve, c as *mut c_void) };
     if e != 0 || sd.is_null() {
         // SAFETY: not handed to any ref.
         drop(unsafe { Box::from_raw(c) });
         return;
     }
     unsafe { DNSServiceSetDispatchQueue(sd, inner.queue) };
-    inner.pending.lock().unwrap().insert(instance, Pending { ctx: c as usize, resolve: sd as usize, ..Default::default() });
+    inner.pending.lock().unwrap().insert(instance, Pending { ctx: c as usize, ifaces: HashSet::from([iface]), resolve: sd as usize, ..Default::default() });
 }
 
-extern "C" fn on_resolve(sd: DNSServiceRef, _: u32, iface: u32, err: i32, _: *const c_char, host: *const c_char, port: u16, txt_len: u16, txt: *const u8, ctx: *mut c_void) {
+extern "C" fn on_resolve(sd: DNSServiceRef, _: u32, _: u32, err: i32, _: *const c_char, host: *const c_char, port: u16, txt_len: u16, txt: *const u8, ctx: *mut c_void) {
     // SAFETY: the context box lives until its refs are deallocated (stop_lookups).
     let c = unsafe { &*(ctx as *const Ctx) };
     if err != 0 {
@@ -174,7 +193,7 @@ extern "C" fn on_resolve(sd: DNSServiceRef, _: u32, iface: u32, err: i32, _: *co
     let txt = if txt.is_null() { HashMap::new() } else { parse_txt(unsafe { std::slice::from_raw_parts(txt, txt_len as usize) }) };
     let mut addr: DNSServiceRef = std::ptr::null_mut();
     // SAFETY: host is a valid C string; same context.
-    let e = unsafe { DNSServiceGetAddrInfo(&mut addr, 0, iface, PROTO_V4 | PROTO_V6, host, on_addr, ctx) };
+    let e = unsafe { DNSServiceGetAddrInfo(&mut addr, 0, 0, PROTO_V4 | PROTO_V6, host, on_addr, ctx) };
     let mut pending = c.inner.pending.lock().unwrap();
     if let Some(p) = pending.get_mut(&c.instance) {
         p.txt = txt;

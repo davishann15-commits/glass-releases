@@ -87,7 +87,7 @@ final class Store {
         let support = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("Glass")
         let caches = fm.urls(for: .cachesDirectory, in: .userDomainMask)[0].appendingPathComponent("Glass")
         let docs = fm.urls(for: .documentDirectory, in: .userDomainMask)[0]
-        let config = CoreConfig(dataDir: support.path, cacheDir: caches.path, documentsDir: docs.path, demo: demo, deviceName: UIDevice.current.model == "iPad" ? "Glass iPad" : "Glass iPhone", language: Locale.preferredLanguages.first ?? "en", reduceMotion: UIAccessibility.isReduceMotionEnabled)
+        let config = CoreConfig(dataDir: support.path, cacheDir: caches.path, documentsDir: docs.path, demo: demo, deviceName: UIDevice.current.model == "iPad" ? "Glass iPad" : "Glass iPhone", language: Locale.preferredLanguages.first ?? "en", reduceMotion: UIAccessibility.isReduceMotionEnabled, pickedFolders: demo ? PickedFolders.openForDemo() : PickedFolders.open())
         let listener = Listener()
         core = GlassCore(config: config, listener: listener, keychain: demo ? nil : KeychainStore(), translator: AppleTranslator())
         listener.store = self

@@ -376,6 +376,10 @@ fn udta(song: &Song, cover: Option<&[u8]>) -> Vec<u8> {
         // Reserved, track, total, reserved.
         ilst.extend(item(b"trkn", 0, &[0, 0, (n >> 8) as u8, n as u8, 0, 0, 0, 0]));
     }
+    if let Some(n) = song.disc_number {
+        // Reserved, disc, total.
+        ilst.extend(item(b"disk", 0, &[0, 0, (n >> 8) as u8, n as u8, 0, 0]));
+    }
     if let Some(link) = &song.link {
         ilst.extend(text(b"\xA9cmt", link));
     }
@@ -452,6 +456,7 @@ mod tests {
             artists: vec!["Pritam".into(), "Arijit Singh".into()],
             album: Some("Brahmastra".into()),
             track_number: Some(1),
+            disc_number: Some(2),
             year: Some("2022".into()),
             ..Default::default()
         };
@@ -466,6 +471,7 @@ mod tests {
         assert_eq!(tag.artist().as_deref(), Some("Pritam, Arijit Singh"));
         assert_eq!(tag.album().as_deref(), Some("Brahmastra"));
         assert_eq!(tag.track(), Some(1));
+        assert_eq!(tag.disk(), Some(2));
         assert_eq!(tag.pictures().len(), 1);
         let _ = std::fs::remove_dir_all(&dir);
     }

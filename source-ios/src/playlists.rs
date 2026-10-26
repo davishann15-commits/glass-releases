@@ -156,7 +156,17 @@ impl Playlists {
             return Ok(id);
         }
         let id = format!("lp_{}", &uuid::Uuid::new_v4().simple().to_string()[..12]);
-        list.push(LocalPlaylist { id: id.clone(), name, description: description.chars().take(500).collect(), tracks, created: t, updated: t, from_draft: None, source: Some(source.to_string()), cover });
+        list.push(LocalPlaylist {
+            id: id.clone(),
+            name,
+            description: description.chars().take(500).collect(),
+            tracks,
+            created: t,
+            updated: t,
+            from_draft: None,
+            source: Some(source.to_string()),
+            cover,
+        });
         self.commit(list, Some(Undo::Created(id.clone())))?;
         Ok(id)
     }

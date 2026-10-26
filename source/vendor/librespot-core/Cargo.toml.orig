@@ -93,7 +93,6 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 sha1 = { version = "0.10", features = ["oid"] }
 shannon = "0.2"
-sysinfo = { version = "0.36", default-features = false, features = ["system"] }
 thiserror = "2"
 time = { version = "0.3", features = ["formatting", "parsing"] }
 tokio = { version = "1", features = [
@@ -119,3 +118,10 @@ vergen-gitcl = { version = "1.0", default-features = false, features = [
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros"] }
+
+# Glass: sysinfo doesn't build for iOS (see src/ios_sys.rs).
+[target.'cfg(not(target_os = "ios"))'.dependencies]
+sysinfo = { version = "0.36", default-features = false, features = ["system"] }
+
+[target.'cfg(target_os = "ios")'.dependencies]
+libc = "0.2"

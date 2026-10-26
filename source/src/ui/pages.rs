@@ -46,6 +46,7 @@ pub fn show(app: &mut App, ui: &mut Ui) {
                 Route::YourEpisodes => your_episodes(app, ui),
                 Route::LocalFiles => super::local_library::show(app, ui),
                 Route::LocalAlbum { artist, album } => super::local_library::album_page(app, ui, &artist, &album),
+                Route::Device { id, name } => device_page(app, ui, &id, &name),
                 Route::LocalPlaylist(id) => local_playlist(app, ui, &id),
                 Route::Recents => recents(app, ui),
                 Route::Folder(id) => folder(app, ui, &id),
@@ -1476,18 +1477,42 @@ fn mark_saved_once(ui: &Ui, page: &str, v: &Arc<Value>) -> bool {
     true
 }
 
-/// Glass on your other computers on this network, and songs going to and from them.
+/// Glass on your other devices on this network (click one to see its songs and get
+/// some), and songs going to and from them.
 pub(super) fn devices(app: &mut App, ui: &mut Ui) {
-    use crate::share::State;
     if !app.settings.share_local_files {
         return;
     }
     if app.share_peers.is_empty() {
-        widgets::subtle(ui, "Glass on your other computers shows up here when it's on this network and signed in to your account, to send songs back and forth.");
+        widgets::subtle(ui, "Glass on your other devices (a Mac, a Linux PC or an iPhone) shows up here by itself when it's open on this network and signed in to this Spotify account.");
     } else {
-        let names: Vec<&str> = app.share_peers.iter().map(|p| p.name.as_str()).collect();
-        widgets::subtle(ui, format!("On this network: {}. Right-click songs to send them; playlists get their missing local songs from these computers.", names.join(", ")));
+        for p in app.share_peers.clone() {
+            let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width().min(520.0), 44.0), Sense::click());
+            resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &p.name));
+            if resp.hovered() {
+                ui.painter().rect_filled(rect, theme::small_radius(), col::hover());
+            }
+            icons::paint(ui.painter(), Rect::from_center_size(pos2(rect.left() + 18.0, rect.center().y), vec2(20.0, 20.0)), Icon::Devices, col::accent());
+            widgets::text_trunc(ui, pos2(rect.left() + 42.0, rect.center().y - 8.0), &p.name, theme::medium(13.5), col::text(), rect.width() - 70.0);
+            widgets::text_trunc(ui, pos2(rect.left() + 42.0, rect.center().y + 9.0), "see its songs and get them here", theme::regular(12.0), col::muted(), rect.width() - 70.0);
+            icons::paint(ui.painter(), Rect::from_center_size(pos2(rect.right() - 16.0, rect.center().y), vec2(14.0, 14.0)), Icon::Chevron, col::muted());
+            widgets::focus_ring(ui, &resp, rect, theme::small_radius());
+            if resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                app.act(Action::Navigate(Route::Device { id: p.id.clone(), name: p.name.clone() }));
+            }
+        }
+        widgets::subtle(ui, "Right-click songs to send them; playlists get their missing local songs from these devices.");
     }
+    for note in app.share_others.iter().filter_map(|p| p.update_note()) {
+        widgets::subtle(ui, note);
+    }
+    transfers(app, ui);
+    ui.add_space(theme::sp(1.0));
+}
+
+/// The last few songs going to and from other devices.
+fn transfers(app: &App, ui: &mut Ui) {
+    use crate::share::State;
     for t in app.transfers.iter().rev().take(3) {
         let what = |n: usize| if n == 1 { "a song".to_string() } else { model::songs(n as u64) };
         let at = t.done.min(t.files.saturating_sub(1)) + 1;
@@ -1507,7 +1532,121 @@ pub(super) fn devices(app: &mut App, ui: &mut Ui) {
             }
         });
     }
+}
+
+/// Another device's Local Files, listed by it: pick songs and get them here (as
+/// on iOS). Songs already here are marked and can't be picked.
+fn device_page(app: &mut App, ui: &mut Ui, id: &str, name: &str) {
+    // Asked for when the page opens.
+    if app.device.as_ref().is_none_or(|d| d.peer != id) {
+        app.act(Action::BrowseDevice(id.to_string()));
+    }
+    ui.label(RichText::new(name).font(theme::regular(30.0)).color(col::text()));
+    let Some(d) = app.device.as_ref() else { return };
+    let songs = match &d.songs {
+        None => {
+            widgets::subtle(ui, "Asking it for its songs…");
+            widgets::loading(ui);
+            return;
+        }
+        Some(Err(e)) => {
+            let e = e.clone();
+            widgets::unavailable(ui, "couldn't load the songs", &e);
+            ui.add_space(theme::sp(1.0));
+            ui.vertical_centered(|ui| {
+                if widgets::bracket_button(ui, None, "try again", false).clicked() {
+                    app.act(Action::BrowseDevice(id.to_string()));
+                }
+            });
+            return;
+        }
+        Some(Ok(songs)) => songs,
+    };
+    if songs.is_empty() {
+        widgets::unavailable(ui, "no songs", &format!("{name} has nothing in Local Files."));
+        return;
+    }
+    let q = app.page_filter.trim().to_lowercase();
+    // Artist, album, title: how Local Files lists songs.
+    let key = |f: &crate::share::FileMeta| (f.artist.to_lowercase(), f.album.to_lowercase(), f.title.to_lowercase());
+    let mut shown: Vec<(usize, &crate::share::FileMeta, bool)> =
+        d.list().enumerate().map(|(i, (f, here))| (i, f, here)).filter(|(_, f, _)| q.is_empty() || format!("{} {} {}", f.title, f.artist, f.album).to_lowercase().contains(&q)).collect();
+    shown.sort_by_cached_key(|(_, f, _)| key(f));
+    let missing = d.list().filter(|(_, here)| !here).count();
+    let picked: Vec<String> = d.list().filter(|(f, here)| !here && app.device_picks.contains(&f.id)).map(|(f, _)| f.id.clone()).collect();
+    let bytes: u64 = d.list().filter(|(f, here)| !here && app.device_picks.contains(&f.id)).map(|(f, _)| f.size).sum();
+    let shown_missing: Vec<String> = shown.iter().filter(|(_, _, here)| !here).map(|(_, f, _)| f.id.clone()).collect();
+    let rows: Vec<(String, String, String, u64, bool)> = shown
+        .iter()
+        .map(|(_, f, here)| (f.id.clone(), f.title.clone(), [f.artist.as_str(), f.album.as_str()].iter().filter(|s| !s.is_empty()).copied().collect::<Vec<_>>().join(" · "), f.duration_ms, *here))
+        .collect();
+    let count = |n: usize| if n == 1 { "1 song".to_string() } else { format!("{} songs", model::fmt_count(n as u64)) };
+    widgets::subtle(ui, format!("{} · {}", count(songs.len()), if missing == 0 { "all on this computer".to_string() } else { format!("{} not on this computer", count(missing)) }));
+    transfers(app, ui);
     ui.add_space(theme::sp(1.0));
+
+    // What's picked, and getting it.
+    ui.horizontal(|ui| {
+        let get = widgets::bracket_button(ui, Some(Icon::Download), &if picked.is_empty() { "get".to_string() } else { format!("get {}", count(picked.len())) }, true);
+        if get.clicked() && !picked.is_empty() {
+            app.act(Action::GetFromDevice { peer: id.to_string(), ids: picked.clone() });
+        }
+        let all_picked = !shown_missing.is_empty() && shown_missing.iter().all(|id| app.device_picks.contains(id));
+        if !shown_missing.is_empty() && !all_picked && widgets::bracket_button(ui, None, "pick all", false).clicked() {
+            app.device_picks.extend(shown_missing.iter().cloned());
+        } else if !app.device_picks.is_empty() && all_picked && widgets::bracket_button(ui, None, "pick none", false).clicked() {
+            app.device_picks.clear();
+        }
+        ui.add_space(theme::sp(1.0));
+        let note = if picked.is_empty() { "Click songs to pick them".to_string() } else { format!("{} picked · {}", count(picked.len()), fmt_bytes(bytes)) };
+        ui.label(RichText::new(note).font(theme::regular(12.5)).color(col::sub()));
+        ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
+            ui.add(egui::TextEdit::singleline(&mut app.page_filter).hint_text(RichText::new("filter").color(col::muted())).font(theme::regular(12.5)).desired_width(theme::px(180.0)));
+        });
+    });
+    ui.add_space(theme::sp(1.0));
+    if rows.is_empty() {
+        widgets::subtle(ui, "Nothing matches the filter.");
+        return;
+    }
+    let w = ui.available_width();
+    for (pos, (song, title, sub, ms, here)) in rows.iter().enumerate() {
+        let (rect, resp) = ui.allocate_exact_size(vec2(w, 40.0), if *here { Sense::hover() } else { Sense::click() });
+        if !ui.is_rect_visible(rect) {
+            continue;
+        }
+        let on = app.device_picks.contains(song);
+        resp.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Checkbox, !*here, on, title));
+        if resp.hovered() && !*here {
+            ui.painter().rect_filled(rect, theme::small_radius(), col::hover());
+        } else if pos % 2 == 1 {
+            ui.painter().rect_filled(rect, theme::small_radius(), col::hover().gamma_multiply(0.35));
+        }
+        let mark = Rect::from_center_size(pos2(rect.left() + 18.0, rect.center().y), vec2(16.0, 16.0));
+        if *here {
+            icons::paint(ui.painter(), mark, Icon::Check, col::muted());
+        } else {
+            ui.painter().rect(
+                mark,
+                CornerRadius::same(4),
+                if on { col::accent() } else { Color32::TRANSPARENT },
+                egui::Stroke::new(1.2, if on { col::accent() } else { col::muted() }),
+                egui::StrokeKind::Inside,
+            );
+            if on {
+                icons::paint(ui.painter(), mark.shrink(2.0), Icon::Check, col::on_accent());
+            }
+        }
+        let tw = rect.width() - 140.0;
+        let color = if *here { col::muted() } else { col::text() };
+        widgets::text_trunc(ui, pos2(rect.left() + 42.0, rect.center().y - 8.0), if title.is_empty() { "Untitled" } else { title }, theme::regular(13.5), color, tw);
+        widgets::text_trunc(ui, pos2(rect.left() + 42.0, rect.center().y + 9.0), if *here { "on this computer" } else { sub }, theme::regular(12.0), col::muted(), tw);
+        ui.painter().text(pos2(rect.right() - 12.0, rect.center().y), Align2::RIGHT_CENTER, model::fmt_ms(*ms), theme::regular(12.5), col::sub());
+        widgets::focus_ring(ui, &resp, rect, theme::small_radius());
+        if resp.clicked() && !app.device_picks.remove(song) {
+            app.device_picks.insert(song.clone());
+        }
+    }
 }
 
 /// Glass's local playlists, at the top of Local Files.
@@ -1827,8 +1966,6 @@ fn activity(app: &mut App, ui: &mut Ui) {
             ("downloads.json", cfg.join("downloads.json"), "What you downloaded"),
             ("local_playlists.json", cfg.join("local_playlists.json"), "Your local playlists"),
             ("lyrics_choices.json", cfg.join("lyrics_choices.json"), "Lyrics you picked, and timing you nudged"),
-            ("share_key", cfg.join("share_key"), "This computer's sharing key (readable only by you)"),
-            ("share_paired.json", cfg.join("share_paired.json"), "The computers it's paired with"),
             ("theme.toml", edited.join("theme.toml"), "Your theme"),
             ("config.toml", edited.join("config.toml"), "Lyrics and assistant settings"),
         ];

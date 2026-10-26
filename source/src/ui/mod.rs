@@ -210,6 +210,7 @@ fn title_strip(app: &mut App, ui: &mut Ui, strip: Rect) {
         Route::Folder(_) => "music / folder",
         Route::LocalPlaylist(_) => "music / local / playlist",
         Route::LocalAlbum { .. } => "music / local / album",
+        Route::Device { .. } => "music / local / device",
     };
     let mut x = strip.left() + px(84.0);
     if app.can_go_back() {
@@ -381,7 +382,7 @@ fn nav_rail(app: &mut App, ui: &mut Ui, rail: Rect) {
     let current = match &app.route {
         Route::Home => 0,
         Route::Search | Route::Genre { .. } => 2,
-        Route::LocalFiles | Route::LocalPlaylist(_) | Route::LocalAlbum { .. } => 3,
+        Route::LocalFiles | Route::LocalPlaylist(_) | Route::LocalAlbum { .. } | Route::Device { .. } => 3,
         Route::Settings | Route::Activity => 4,
         _ => 1,
     };

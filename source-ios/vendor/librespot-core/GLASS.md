@@ -1,9 +1,10 @@
 # librespot-core 0.8.0, patched for Glass
 
 This is librespot-core 0.8.0 from crates.io (MIT licensed, © the librespot
-contributors, https://github.com/librespot-org/librespot) with one change to
-its HTTP client, and one lint attribute. `Cargo.toml` in the app uses it via
-`[patch.crates-io]`; everything else is unchanged.
+contributors, https://github.com/librespot-org/librespot) with a change to
+its HTTP client, one to its handling of free accounts, and one lint attribute.
+`Cargo.toml` in the app uses it via `[patch.crates-io]`; everything else is
+unchanged.
 
 Why: librespot builds its hyper client without a pool timer, and hyper only
 closes idle connections when it has one. Each burst of requests (a page's
@@ -18,6 +19,12 @@ Changes (marked `Glass` in the source):
 - `src/authentication.rs` — an `#[expect(deprecated)]` that nothing matches with
   the dependency versions Glass builds against is an `#[allow]`, so builds stay
   free of warnings.
+- `src/session.rs` — `check_catalogue` logs an account that isn't Premium instead of
+  calling `exit(1)`. Upstream ends the whole process the moment a free account's
+  product info arrives (its own comment: "TODO: logout instead of exiting"), so Glass
+  closed itself about 20 seconds after every launch with a free account saved, before
+  it could be signed out. Free accounts browse with Glass; it doesn't start its
+  playback engine for them (the app checks the account's product itself).
 
 ## iOS (Glass for iOS, `ios/`)
 

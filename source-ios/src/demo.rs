@@ -3,7 +3,7 @@
 //! in a home folder of its own (see `use_own_home`).
 //!
 //! `GLASS_SCREENSHOT=/path.png` saves a screenshot of the window after it
-//! settles, then quits. `GLASS_ROUTE=library|nowplaying|home|playlist|artist|search|settings|activity|liked|local`
+//! settles, then quits. `GLASS_ROUTE=library|nowplaying|home|playlist|artist|search|settings|activity|liked|local|device`
 //! picks the page; `GLASS_RIGHT=queue|devices|lyrics|assistant` opens a side panel and
 //! `GLASS_THEME_PANEL=1` the theme panel. `GLASS_LYRICS=word|line|plain|instrumental|none|ambiguous`
 //! picks what the (offline) lyrics lookup finds.
@@ -163,12 +163,24 @@ pub fn install(app: &mut App) {
     ] }));
     demo_lyrics(app, &tracks[0]);
     app.engine_status = "Demo mode — no network".into();
-    // Another Glass of the account on the network, and a transfer from it.
-    app.share_peers = vec![crate::share::Peer { id: "arch".into(), name: "Arch Desktop".into(), addrs: vec![], port: 0 }];
-    app.transfers = vec![crate::share::Transfer { id: 1, peer: "Arch Desktop".into(), sending: false, files: 12, done: 12, bytes: 0, total: 0, state: crate::share::State::Done }];
+    // Glass of the account on other devices (one needing an update), and a transfer,
+    // unless sharing runs for real (`GLASS_DEMO_SHARE`).
+    if share_folder().is_none() {
+        let peer = |id: &str, name: &str, version| crate::share::Peer { id: id.into(), name: name.into(), addrs: vec![], port: 0, version };
+        app.share_peers = vec![peer("phone", "Davis's iPhone", crate::share::VERSION)];
+        app.share_others = vec![peer("air", "Davis's MacBook Air", 3)];
+        app.transfers = vec![crate::share::Transfer { id: 1, peer: "Davis's iPhone".into(), sending: false, files: 12, done: 12, bytes: 0, total: 0, state: crate::share::State::Done }];
+    }
+    // `GLASS_DEMO_SHARE=<folder>`: Local Files reads that folder, and sharing runs for real.
+    if let Some(folder) = share_folder() {
+        app.settings.local_dirs = vec![folder];
+        app.settings.share_local_files = true;
+        app.scan_local();
+    }
     app.auth_state = AuthState::SignedIn;
     app.route = match std::env::var("GLASS_ROUTE").as_deref() {
         Ok("local") => Route::LocalFiles,
+        Ok("device") => Route::Device { id: "phone".into(), name: "Davis's iPhone".into() },
         Ok("playlist") => Route::Playlist("p0".into()),
         Ok("artist") => Route::Artist("a0".into()),
         Ok("search") => Route::Search,
@@ -299,6 +311,44 @@ fn demo_assistant(app: &mut App) {
 pub fn active() -> bool {
     static ON: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| std::env::var_os("GLASS_DEMO").is_some());
     *ON
+}
+
+/// The demo's other device's songs (its page, `Route::Device`): a few of this
+/// computer's (already here) and some it doesn't have. iOS's demo lists the same.
+pub fn device_songs() -> Vec<crate::share::FileMeta> {
+    let songs = [
+        ("Plastic Love", "Mariya Takeuchi", "Variety", 294),
+        ("Stay With Me", "Miki Matsubara", "Pocket Park", 312),
+        ("Mayonaka no Door", "Miki Matsubara", "Pocket Park", 300),
+        ("Sparkle", "Tatsuro Yamashita", "For You", 435),
+        ("Ride on Time", "Tatsuro Yamashita", "Ride on Time", 352),
+        ("Dancing Sea", "Junko Yagami", "Communication", 285),
+        ("Midnight Pretenders", "Tomoko Aran", "Fuyü-Kükan", 330),
+        ("4:00 A.M.", "Taeko Ohnuki", "Sunshower", 323),
+        ("Telephone Number", "Junko Ohashi", "Magical", 291),
+    ];
+    songs
+        .iter()
+        .enumerate()
+        .map(|(i, (t, a, al, s))| crate::share::FileMeta {
+            id: format!("demo{i}"),
+            name: format!("{t}.flac"),
+            size: *s as u64 * 110_000,
+            title: (*t).into(),
+            artist: (*a).into(),
+            album: (*al).into(),
+            duration_ms: *s as u64 * 1000,
+        })
+        .collect()
+}
+
+/// `GLASS_DEMO_SHARE=<folder>`: the demo's Local Files are the songs in that folder,
+/// and local files sharing runs for real, signed in as the demo's account, so two
+/// demos (or a demo and the iPhone app's `-demo -demoShare`) share songs over the
+/// network. Only other demos have that account: real devices never see them.
+pub fn share_folder() -> Option<PathBuf> {
+    static DIR: std::sync::LazyLock<Option<PathBuf>> = std::sync::LazyLock::new(|| active().then(|| std::env::var_os("GLASS_DEMO_SHARE").map(PathBuf::from)).flatten());
+    DIR.clone()
 }
 
 /// Handles `GLASS_SCREENSHOT`: request a capture after the UI settles, save it, quit.

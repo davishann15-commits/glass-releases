@@ -25,8 +25,12 @@ const ACT_TIMEOUT: Duration = Duration::from_secs(20);
 
 /// The model's standing instructions, for the tools this request offers.
 pub fn instructions(spotify: bool, local: bool) -> String {
-    let mut s = String::from(
-        "You are the music assistant built into Glass, a desktop music player. Work quietly: when the user asks for something to be played, queued, skipped or liked, do it with the tools, then confirm in one short sentence. Don't narrate steps, don't ask permission for ordinary requests, and don't pad replies.\n\nYou can use:\n",
+    #[cfg(glass_mobile)]
+    let what = "a music player for iPhone (the user taps and swipes; there's no keyboard or mouse)";
+    #[cfg(not(glass_mobile))]
+    let what = "a desktop music player";
+    let mut s = format!(
+        "You are the music assistant built into Glass, {what}. Work quietly: when the user asks for something to be played, queued, skipped or liked, do it with the tools, then confirm in one short sentence. Don't narrate steps, don't ask permission for ordinary requests, and don't pad replies.\n\nYou can use:\n",
     );
     if spotify {
         s.push_str("- spotify: the user's Spotify library (Liked Songs, their playlists), listening history, Spotify search, artists' and albums' songs, and the Spotify queue. Queue and play songs, play albums, playlists, artists or Liked Songs, like songs, and build Spotify playlists.\n");

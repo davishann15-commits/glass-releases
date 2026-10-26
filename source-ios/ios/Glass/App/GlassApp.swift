@@ -72,10 +72,8 @@ struct GlassApp: App {
                 }
                 .onAppear {
                     store.core.setAccessibility(reduceMotion: UIAccessibility.isReduceMotionEnabled)
-                    if !store.demo {
-                        LocalImport.restoreFolders(store: store)
-                        SaveFolderButtons.restore(store: store)
-                    }
+                    // Songs in picked folders that are only in iCloud (opened before the core started).
+                    if !store.demo { CloudSongs.shared.fetch(PickedFolders.sources, store: store) }
                 }
                 .onReceive(NotificationCenter.default.publisher(for: UIAccessibility.reduceMotionStatusDidChangeNotification)) { _ in
                     store.core.setAccessibility(reduceMotion: UIAccessibility.isReduceMotionEnabled)

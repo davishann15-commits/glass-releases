@@ -9,31 +9,27 @@
 use crate::app::{MobileApp, Msg};
 use crate::bridge::CoreEvent;
 use crate::model::s;
-use crate::share::{Event, FileMeta, State};
-use std::collections::HashMap;
+use crate::share::{Browsed, Event, State};
 
 #[derive(Default)]
 pub struct ShareState {
     pub share: Option<crate::share::Share>,
     failed: Option<String>,
+    /// The user hasn't allowed Glass on the local network.
+    denied: bool,
+    /// The devices songs can go to and from.
     pub peers: Vec<crate::share::Peer>,
+    /// This account's Glass on other devices that speaks another protocol (one of
+    /// them needs updating).
+    others: Vec<crate::share::Peer>,
     pub transfers: Vec<crate::share::Transfer>,
     pub library: crate::share::Library,
     /// A playlist whose missing local songs were asked for before its songs loaded.
     pub missing_for: Option<String>,
     /// The other device whose songs are on screen.
-    browsing: Option<Browsing>,
+    browsing: Option<Browsed>,
     published: Option<ShareModel>,
     published_library: Option<DeviceLibraryModel>,
-}
-
-struct Browsing {
-    peer: String,
-    name: String,
-    /// `None` while they're asked for.
-    songs: Option<Result<Vec<FileMeta>, String>>,
-    /// Which of them are on this device already.
-    here: Vec<bool>,
 }
 
 #[derive(uniffi::Record, Clone, PartialEq, Debug)]
@@ -58,6 +54,8 @@ pub struct ShareModel {
     /// Why it couldn't start (local network access refused, say).
     pub error: Option<String>,
     pub peers: Vec<PeerModel>,
+    /// Glass on other devices that can't share with this one, and which needs updating.
+    pub notes: Vec<String>,
     /// The last few, newest first.
     pub transfers: Vec<TransferModel>,
     pub inbox: String,
@@ -107,7 +105,7 @@ impl MobileApp {
     /// Desktop `keep_sharing`: starts or stops sharing to match the setting, once
     /// signed in (the account is what proves a device is yours).
     pub fn keep_sharing(&mut self) {
-        let want = self.settings.share_local_files && !self.demo && self.foreground;
+        let want = self.settings.share_local_files && (!self.demo || crate::demo::real_sharing()) && self.foreground;
         if !want {
             if self.shares.share.take().is_some() {
                 self.shares.peers.clear();
@@ -127,13 +125,14 @@ impl MobileApp {
         }
         crate::platform::set_share_name(&self.settings.device_name);
         let instance = crate::model::random_hex(12);
-        let who = crate::share::Me { instance, name: crate::share::computer_name(), account: crate::share::account_secret(username, s(me, "email")) };
+        let who = crate::share::Me { instance, name: crate::share::computer_name(), account: crate::share::account_secret(username, s(me, "email")), username: username.to_string() };
         if let Ok(mut lib) = self.shares.library.write() {
             *lib = self.local_tracks.clone().unwrap_or_default();
         }
         let tx = self.tx.clone();
         let inbox = crate::share::inbox();
         let _ = std::fs::create_dir_all(&inbox);
+        self.shares.denied = false;
         match crate::share::Share::start(self.rt.clone(), who, self.shares.library.clone(), inbox, move |e| tx.send(Msg::Share(e))) {
             Ok(share) => self.shares.share = Some(share),
             Err(e) => {
@@ -146,12 +145,17 @@ impl MobileApp {
     /// Desktop `share_event`.
     pub fn share_event(&mut self, e: Event) {
         match e {
-            Event::Peers(p) => self.shares.peers = p,
+            Event::Peers(p) => {
+                // Finding anything means the local network is open to Glass.
+                self.shares.denied &= p.is_empty();
+                (self.shares.peers, self.shares.others) = p.into_iter().partition(|p| p.ready());
+            }
+            Event::NoLocalNetwork => self.shares.denied = true,
             Event::Library { peer, songs } => {
-                if let Some(b) = self.shares.browsing.as_mut().filter(|b| b.peer == peer) {
-                    b.songs = Some(songs.map_err(|_| format!("Couldn't see the songs on {}. Check that it's on, has Glass open and is on the same Wi-Fi.", b.name)));
+                let mine = self.local_tracks.clone().unwrap_or_default();
+                if let Some(b) = self.shares.browsing.as_mut() {
+                    b.answered(&peer, songs, &mine);
                 }
-                self.mark_browsed_here();
             }
             Event::Transfer(t) => {
                 if matches!(t.state, State::Failed(_)) {
@@ -187,11 +191,11 @@ impl MobileApp {
     /// Shows `peer`'s songs (asked for now; `DeviceLibrary` events follow).
     pub fn share_browse(&mut self, peer: String) {
         let Some(p) = self.shares.peers.iter().find(|p| p.id == peer).cloned() else {
-            self.shares.browsing = Some(Browsing { name: "That device".into(), peer, songs: Some(Err("That device isn't on this network any more.".into())), here: Vec::new() });
+            self.shares.browsing = Some(Browsed { name: "That device".into(), peer, songs: Some(Err("That device isn't on this network any more.".into())), here: Vec::new() });
             return;
         };
-        self.shares.browsing = Some(Browsing { peer: p.id.clone(), name: p.name.clone(), songs: None, here: Vec::new() });
-        if self.demo {
+        self.shares.browsing = Some(Browsed::new(&p));
+        if self.demo && self.shares.share.is_none() {
             self.share_event(Event::Library { peer: p.id, songs: Ok(crate::demo::device_songs()) });
         } else if let Some(share) = &self.shares.share {
             share.browse(p);
@@ -202,7 +206,7 @@ impl MobileApp {
 
     /// Gets the picked songs (`DeviceSongModel::id`s) from the device being browsed.
     pub fn share_get(&mut self, peer: String, ids: Vec<String>) {
-        if self.demo {
+        if self.demo && self.shares.share.is_none() {
             let n = ids.len();
             return self.toast(if n == 1 { "Getting a song from Arch Desktop…".to_string() } else { format!("Getting {n} songs from Arch Desktop…") });
         }
@@ -215,18 +219,12 @@ impl MobileApp {
         self.toast(if n == 1 { format!("Getting a song from {}…", p.name) } else { format!("Getting {n} songs from {}…", p.name) });
     }
 
-    /// Marks which of the browsed device's songs are on this device (after a list
-    /// arrives, and as songs arrive here). By title first: there are thousands.
+    /// Marks which of the browsed device's songs are on this device (as songs arrive here).
     fn mark_browsed_here(&mut self) {
-        let Some(b) = self.shares.browsing.as_mut() else { return };
-        let Some(Ok(songs)) = &b.songs else { return };
         let mine = self.local_tracks.clone().unwrap_or_default();
-        let norm = crate::lyrics::matching::normalize;
-        let mut by_title: HashMap<String, Vec<crate::local::LocalTrack>> = HashMap::new();
-        for t in mine.iter() {
-            by_title.entry(norm(&t.title)).or_default().push(t.clone());
+        if let Some(b) = self.shares.browsing.as_mut() {
+            b.mark_here(&mine);
         }
-        b.here = songs.iter().map(|f| by_title.get(&norm(&f.title)).is_some_and(|same| crate::local::find(same, &f.spotify_uri()).is_some())).collect();
     }
 
     pub fn send_to_device(&mut self, peer: String, paths: Vec<String>) {
@@ -317,8 +315,9 @@ impl MobileApp {
         let m = ShareModel {
             on: self.settings.share_local_files,
             running: self.shares.share.is_some(),
-            error: self.shares.failed.clone(),
+            error: self.shares.failed.clone().or_else(|| self.shares.denied.then(|| "Glass can't look for your other devices. Allow Local Network for Glass in Settings › Privacy & Security.".to_string())),
             peers: self.shares.peers.iter().map(|p| PeerModel { id: p.id.clone(), name: p.name.clone() }).collect(),
+            notes: self.shares.others.iter().filter_map(|p| p.update_note()).collect(),
             transfers: self.shares.transfers.iter().rev().take(3).map(transfer_text).collect(),
             inbox: crate::share::inbox().to_string_lossy().into_owned(),
         };
@@ -332,14 +331,7 @@ impl MobileApp {
             name: b.name.clone(),
             loading: b.songs.is_none(),
             error: b.songs.as_ref().and_then(|r| r.as_ref().err().cloned()),
-            songs: match &b.songs {
-                Some(Ok(songs)) => songs
-                    .iter()
-                    .enumerate()
-                    .map(|(i, f)| DeviceSongModel { id: f.id.clone(), title: f.title.clone(), artist: f.artist.clone(), album: f.album.clone(), duration_ms: f.duration_ms, size: f.size, here: b.here.get(i).copied().unwrap_or(false) })
-                    .collect(),
-                _ => Vec::new(),
-            },
+            songs: b.list().map(|(f, here)| DeviceSongModel { id: f.id.clone(), title: f.title.clone(), artist: f.artist.clone(), album: f.album.clone(), duration_ms: f.duration_ms, size: f.size, here }).collect(),
         });
         if let Some(lib) = lib
             && self.shares.published_library.as_ref() != Some(&lib)

@@ -197,6 +197,7 @@ pub async fn bonjour(secs: u64) -> String {
         let line = match ev {
             crate::bonjour::Found::Service { instance, txt, port, addrs } => format!("found {instance} port {port} v={} name={} addrs={addrs:?}", txt.get("v").cloned().unwrap_or_default(), txt.get("name").cloned().unwrap_or_default()),
             crate::bonjour::Found::Gone { instance } => format!("gone {instance}"),
+            crate::bonjour::Found::Denied => "local network access refused".to_string(),
         };
         step(&line);
         seen.push(line);

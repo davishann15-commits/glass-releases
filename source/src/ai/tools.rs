@@ -654,8 +654,17 @@ mod tests {
     }
 
     fn snap() -> Snapshot {
-        let pl =
-            LocalPlaylist { id: "lp_1".into(), name: "Drive".into(), description: String::new(), tracks: vec!["/m/ride.mp3".into(), "/m/gone.mp3".into()], created: 0, updated: 0, from_draft: None };
+        let pl = LocalPlaylist {
+            id: "lp_1".into(),
+            name: "Drive".into(),
+            description: String::new(),
+            tracks: vec!["/m/ride.mp3".into(), "/m/gone.mp3".into()],
+            created: 0,
+            updated: 0,
+            from_draft: None,
+            source: None,
+            cover: None,
+        };
         Snapshot::new(&library(), &[pl], &["/m/run.mp3".into()], Vec::new(), 0)
     }
 

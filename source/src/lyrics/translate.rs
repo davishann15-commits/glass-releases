@@ -141,6 +141,11 @@ pub fn system_language() -> String {
 }
 
 fn read_system_language() -> String {
+    // iOS: the app passes the first of the user's preferred languages.
+    #[cfg(glass_mobile)]
+    if let Some(l) = crate::platform::language() {
+        return base_code(&l);
+    }
     #[cfg(target_os = "macos")]
     // `defaults` prints a list such as `(\n    en,\n    "ja-JP"\n)`: codes with a dash are quoted.
     if let Ok(out) = std::process::Command::new("/usr/bin/defaults").args(["read", "-g", "AppleLanguages"]).output()
@@ -268,11 +273,29 @@ fn macos_major() -> Option<u32> {
 }
 
 /// Whether Apple's translation can be used here at all.
+#[cfg(not(glass_mobile))]
 pub fn apple_available() -> bool {
     cfg!(target_os = "macos") && helper().is_some()
 }
 
+/// iOS: Apple's Translation framework, through the app (no helper process).
+#[cfg(glass_mobile)]
+pub fn apple_available() -> bool {
+    crate::platform::translator().is_some()
+}
+
+/// iOS: the same request and answer as the macOS helper, answered by the app.
+#[cfg(glass_mobile)]
+pub fn apple(lines: &[String], source: Option<&str>, target: &str) -> Translation {
+    let Some(t) = crate::platform::translator() else {
+        return Translation::Unavailable { why: "On-device translation isn't available on this device.".into(), fix: None };
+    };
+    let input = json!({ "lines": lines, "source": source, "target": target }).to_string();
+    parse_apple(&t.translate(input), lines.len(), target)
+}
+
 /// Translates with Apple's on-device engine. Blocking (run off the UI thread).
+#[cfg(not(glass_mobile))]
 pub fn apple(lines: &[String], source: Option<&str>, target: &str) -> Translation {
     let Some(bin) = helper() else {
         return Translation::Unavailable { why: "On-device translation isn't part of this build of Glass.".into(), fix: None };
@@ -320,11 +343,15 @@ fn parse_apple(text: &str, n: usize, target: &str) -> Translation {
             if lines.len() != n {
                 return Translation::Failed("the translation didn't line up with the lyrics".into());
             }
-            Translation::Ready { from: source, to: target.into(), lines, by: "Apple, on this Mac".into() }
+            Translation::Ready { from: source, to: target.into(), lines, by: if cfg!(glass_mobile) { "Apple, on this device" } else { "Apple, on this Mac" }.into() }
         }
         Some("same") => Translation::Same { lang: if source.is_empty() { target.into() } else { source } },
         Some("needs_download") => Translation::Unavailable {
-            why: format!("{} needs downloading for on-device translation: System Settings → General → Language & Region → Translation Languages.", pair()),
+            why: if cfg!(glass_mobile) {
+                format!("{} needs downloading for on-device translation.", pair())
+            } else {
+                format!("{} needs downloading for on-device translation: System Settings → General → Language & Region → Translation Languages.", pair())
+            },
             fix: Some(Fix::DownloadLanguage),
         },
         Some("unsupported") => Translation::Unavailable { why: format!("Apple's on-device translation doesn't support {}.", pair()), fix: None },

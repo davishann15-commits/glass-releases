@@ -11,7 +11,11 @@
 //! under the platform's app-data folder, where they have always been; this
 //! file only holds the look.
 
+#[cfg(not(glass_mobile))]
 use eframe::egui::Color32;
+// The iOS core (ios/core) has no egui; the color type is the same one, from ecolor.
+#[cfg(glass_mobile)]
+use ecolor::Color32;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime};
 use toml_edit::{DocumentMut, Item, Value, value};
@@ -467,12 +471,22 @@ pub fn parse(text: &str, system_reduce_motion: bool) -> Result<(Theme, Vec<Strin
 }
 
 pub fn config_dir() -> PathBuf {
-    let base = std::env::var_os("XDG_CONFIG_HOME")
-        .map(PathBuf::from)
-        .filter(|p| p.is_absolute())
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))
-        .unwrap_or_else(|| PathBuf::from(".config"));
-    base.join("glass")
+    // iOS: an app may only write inside Documents, Library and tmp of its container
+    // (its "home"), so ~/.config can't be created ("Operation not permitted"). The
+    // hand-edited files live with the rest of Glass's data, in Library/Application Support/Glass.
+    #[cfg(glass_mobile)]
+    {
+        crate::config::config_dir()
+    }
+    #[cfg(not(glass_mobile))]
+    {
+        let base = std::env::var_os("XDG_CONFIG_HOME")
+            .map(PathBuf::from)
+            .filter(|p| p.is_absolute())
+            .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))
+            .unwrap_or_else(|| PathBuf::from(".config"));
+        base.join("glass")
+    }
 }
 
 /// Font files for a family: (path, index within a .ttc collection).
@@ -773,6 +787,14 @@ impl ThemeStore {
             }
             doc[table][field] = Item::Value(v);
         })
+    }
+
+    /// A key's value as the file has it ("system" for `motion.reduce = "system"`),
+    /// or `None` when the file doesn't set it.
+    #[cfg_attr(not(glass_mobile), allow(dead_code))]
+    pub fn written(&self, key: &str) -> Option<String> {
+        let v = lookup(&self.doc, key)?.as_value()?;
+        Some(v.as_str().map(str::to_string).unwrap_or_else(|| v.to_string().trim().to_string()))
     }
 
     /// Shows `key = raw` without writing the file (while a slider or color is
@@ -1089,6 +1111,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(glass_mobile))] // iOS keeps it in the app's own folder
     fn xdg_config_home_is_respected() {
         // Only absolute paths count, per the XDG spec.
         let saved = std::env::var_os("XDG_CONFIG_HOME");

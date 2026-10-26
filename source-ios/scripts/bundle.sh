@@ -55,7 +55,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>LSMinimumSystemVersion</key><string>12.0</string>
   <key>NSHighResolutionCapable</key><true/>
   <key>LSApplicationCategoryType</key><string>public.app-category.music</string>
-  <key>NSLocalNetworkUsageDescription</key><string>Glass finds your other computers running Glass on this network, to send local songs between them.</string>
+  <key>NSLocalNetworkUsageDescription</key><string>Glass finds Glass on your other devices on this network, to share local songs with them.</string>
   <key>NSBonjourServices</key><array><string>_glass-files._tcp</string></array>
 </dict>
 </plist>

@@ -11,14 +11,38 @@ pub(crate) const IOS_CLIENT_ID: &str = "58bd3c95768941ea9eb4350aaa033eb3";
 // android or ios needs to be mocked, the `os_version` has to be set to a valid version.
 // Otherwise, client-token or login5 requests will fail with a generic invalid-credential error.
 /// See [std::env::consts::OS]
-pub const OS: &str = std::env::consts::OS;
+///
+/// Glass: on iOS, librespot presents itself exactly as it does on macOS (the
+/// desktop client Glass's internal services are written for), not as Spotify's
+/// iOS app, whose client ID, hash-cash client tokens and mobile version strings
+/// librespot would otherwise switch to.
+pub const OS: &str = if cfg!(target_os = "ios") { "macos" } else { std::env::consts::OS };
 
 // valid versions for some os:
 // 'android': 30
 // 'ios': 17
 /// See [sysinfo::System::os_version]
+#[cfg(not(target_os = "ios"))]
 pub fn os_version() -> String {
     sysinfo::System::os_version().unwrap_or("0".into())
+}
+
+/// Glass: sysinfo doesn't build for iOS; the same value comes from sysctl.
+#[cfg(target_os = "ios")]
+pub fn os_version() -> String {
+    crate::ios_sys::sysctl_string("kern.osproductversion").unwrap_or("0".into())
+}
+
+/// The kernel's release (see [sysinfo::System::kernel_version]).
+#[cfg(not(target_os = "ios"))]
+pub fn kernel_version() -> String {
+    sysinfo::System::kernel_version().unwrap_or_else(|| String::from("0"))
+}
+
+/// Glass: sysinfo doesn't build for iOS; the same value comes from sysctl.
+#[cfg(target_os = "ios")]
+pub fn kernel_version() -> String {
+    crate::ios_sys::sysctl_string("kern.osrelease").unwrap_or_else(|| String::from("0"))
 }
 
 #[derive(Clone, Debug)]

@@ -75,12 +75,12 @@ const IDLE: Duration = Duration::from_secs(600);
 const XPUI: &str = "/Applications/Spotify.app/Contents/Resources/Apps/xpui.spa";
 
 /// Persisted GraphQL queries, by operation name, as shipped in Spotify.app
-/// 1.3.4's xpui bundle. Spotify rotates these with app updates; when one is
+/// 1.3.6's xpui bundle. Spotify rotates these with app updates; when one is
 /// rejected, `rescan_queries` reads the current ones from the installed app (on
 /// macOS, where Spotify.app can be installed).
 const QUERIES: &[(&str, &str)] = &[
-    ("searchDesktop", "1148393611bbc58e84e47aed35ecc731275df9f9eb660956962e352dd3631d89"),
-    ("userTopContent", "49ee15704de4a7fdeac65a02db20604aa11e46f02e809c55d9a89f6db9754356"),
+    ("searchDesktop", "eef7cc54888d91bdd6802623477873caa3948ae173a0c34fd86827b267e94c03"),
+    ("userTopContent", "61b7353d3625780022dbc63d459eb64cd609e7e5e2a820f9160d65030efe2e15"),
     ("queryArtistOverview", "1ac33ddab5d39a3a9c27802774e6d78b9405cc188c6f75aed007df2a32737c72"),
     ("browseAll", "dbd8b55e09a58afc52eab438bc228ba28fd72ac2f2148c6c26354980e4579001"),
     ("browsePage", "f5c4e6d668f5716464a231c1cc8b22c1cbf6ad68b09929fd7de813a30581298b"),
@@ -153,6 +153,66 @@ fn rescan_queries() -> HashMap<String, String> {
         let _ = std::fs::write(queries_path(), serde_json::to_string(&found).unwrap_or_default());
     }
     found
+}
+
+/// iOS: the current query hashes from Spotify's own web player (open.spotify.com),
+/// which declares them the same way as Spotify.app's bundle: the main script, then
+/// the route scripts it loads lazily (search, browse, profile…), until each query
+/// Glass uses is found. Remembered in queries.json like the desktop's.
+#[cfg(glass_mobile)]
+pub(crate) async fn web_player_queries(http: &reqwest::Client) -> HashMap<String, String> {
+    // The desktop web player: a phone's is a different app without these queries.
+    const UA: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Safari/605.1.15";
+    let get = |url: String| {
+        let http = http.clone();
+        async move { http.get(url).header("user-agent", UA).send().await.ok()?.text().await.ok() }
+    };
+    let Some(page) = get("https://open.spotify.com/".into()).await else { return HashMap::new() };
+    const BASE: &str = "https://open.spotifycdn.com/cdn/build/web-player/";
+    let Some(main) = page.match_indices(BASE).map(|(i, _)| &page[i..]).filter_map(|rest| rest.split('"').next()).find(|u| u.contains("/web-player.") && u.ends_with(".js")) else {
+        return HashMap::new();
+    };
+    let Some(js) = get(main.to_string()).await else { return HashMap::new() };
+    let mut found = find_queries(&js);
+    for (name, hash) in web_player_chunks(&js) {
+        if found.len() == QUERIES.len() {
+            break;
+        }
+        if !["search", "browse", "genre", "profile", "home", "artist"].iter().any(|w| name.contains(w)) {
+            continue;
+        }
+        if let Some(chunk) = get(format!("{BASE}{name}.{hash}.js")).await {
+            for (k, v) in find_queries(&chunk) {
+                found.entry(k).or_insert(v);
+            }
+        }
+    }
+    if !found.is_empty() {
+        let _ = std::fs::write(queries_path(), serde_json::to_string(&found).unwrap_or_default());
+    }
+    found
+}
+
+/// The web player's lazily loaded scripts as (name, content hash), from its chunk
+/// map: `(({id:"name",…})[e]||e)+"."+({id:"hash8",…})[e]+".js"`.
+#[cfg(any(test, glass_mobile))]
+fn web_player_chunks(js: &str) -> Vec<(String, String)> {
+    let Some(end) = js.find("})[e]+\".js\"") else { return Vec::new() };
+    let Some(hstart) = js[..end].rfind("({") else { return Vec::new() };
+    let Some(nstart) = js[..hstart].rfind("({") else { return Vec::new() };
+    let nend = js[nstart..hstart].find('}').map_or(hstart, |i| nstart + i);
+    let pairs = |text: &str| -> Vec<(String, String)> {
+        text.split(',')
+            .filter_map(|kv| {
+                let (k, v) = kv.split_once(':')?;
+                let v = v.trim_matches('"');
+                let ok = !k.is_empty() && k.chars().all(|c| c.is_ascii_digit()) && !v.is_empty() && v.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '~');
+                ok.then(|| (k.to_string(), v.to_string()))
+            })
+            .collect()
+    };
+    let hashes: HashMap<String, String> = pairs(&js[hstart + 2..end]).into_iter().collect();
+    pairs(&js[nstart + 2..nend]).into_iter().filter_map(|(id, name)| hashes.get(&id).map(|h| (name, h.clone()))).collect()
 }
 
 /// The device ID of the connection that reads the library and pages (made once,
@@ -237,7 +297,8 @@ impl Sp {
         Self::connect_with(Credentials::with_access_token(access_token), proxy, on_change).await
     }
 
-    #[cfg(test)]
+    /// With librespot's saved login (tests; and the iOS core's debug-build feasibility probe).
+    #[cfg(any(test, glass_mobile))]
     pub async fn connect_cached(credentials: Credentials) -> Result<Arc<Self>> {
         Self::connect_with(credentials, "", None).await
     }
@@ -455,8 +516,15 @@ impl Sp {
                         return Ok(v);
                     }
                 }
+                #[cfg(not(glass_mobile))]
                 log::warn!("{name}: query hash is stale; reading current ones from Spotify.app");
+                #[cfg(not(glass_mobile))]
                 let found = tokio::task::spawn_blocking(rescan_queries).await.unwrap_or_default();
+                // iOS can't read Spotify.app: the same declarations are in Spotify's web player.
+                #[cfg(glass_mobile)]
+                log::warn!("{name}: query hash is stale; reading current ones from Spotify's web player");
+                #[cfg(glass_mobile)]
+                let found = web_player_queries(&self.http).await;
                 if found.is_empty() {
                     return Err(e.context(if cfg!(target_os = "macos") {
                         "Spotify changed how this page is asked for; installing or updating Spotify.app (Glass reads it from there), or updating Glass, fixes it"
@@ -1043,6 +1111,16 @@ mod tests {
         let found = find_queries(&js);
         assert_eq!(found.get("searchDesktop"), Some(&h));
         assert!(!found.contains_key("browseAll"));
+    }
+
+    #[test]
+    fn web_player_chunk_map() {
+        let js =
+            r#"u.u=e=>""+(({1328:"xpui-pip-mini-player",4406:"xpui-routes-search",9908:"dwp-panel-section"})[e]||e)+"."+({1328:"38964775",4406:"0ab299ca",9908:"d73a3ce7"})[e]+".js",u.miniCssF=e=>"""#;
+        let mut chunks = web_player_chunks(js);
+        chunks.sort();
+        assert_eq!(chunks, vec![("dwp-panel-section".into(), "d73a3ce7".into()), ("xpui-pip-mini-player".into(), "38964775".into()), ("xpui-routes-search".into(), "0ab299ca".into())]);
+        assert!(web_player_chunks("no map here").is_empty());
     }
 
     #[test]

@@ -148,6 +148,12 @@ pub fn install(app: &mut MobileApp) {
     }
     app.resend_saved();
     app.me = Some(d.me.clone());
+    // `-demoFree`: a Spotify Free account (UI tests of what it can and can't do).
+    if std::env::args().any(|a| a == "-demoFree")
+        && let Some(me) = app.me.as_mut()
+    {
+        me["product"] = "free".into();
+    }
     // `-demoTrack N`: the playlist's Nth song plays instead of the first (UI tests).
     let args: Vec<String> = std::env::args().collect();
     let playing = args.iter().position(|a| a == "-demoTrack").and_then(|i| args.get(i + 1)?.parse::<usize>().ok()).filter(|n| *n < d.tracks.len()).unwrap_or(0);
@@ -205,9 +211,19 @@ pub fn install(app: &mut MobileApp) {
             ..Default::default()
         })
         .collect();
-    app.local_tracks = Some(Arc::new(tracks));
-    // Another Glass on the network, whose songs can be browsed (`share_browse`).
-    app.shares.peers = vec![crate::share::Peer { id: "arch".into(), name: "Arch Desktop".into(), addrs: vec![], port: 0 }];
+    // `-demoFolders`: Local Files reads real folders instead (UI tests of adding one).
+    if real_folders() {
+        app.scan_local();
+    } else {
+        app.local_tracks = Some(Arc::new(tracks));
+    }
+    // Another Glass on the network, whose songs can be browsed (`share_browse`), unless
+    // sharing runs for real (`-demoShare`).
+    if !real_sharing() {
+        // And a Mac with an older Glass, which can't share until it's updated.
+        let peer = |id: &str, name: &str, version| crate::share::Peer { id: id.into(), name: name.into(), addrs: vec![], port: 0, version };
+        app.share_event(crate::share::Event::Peers(vec![peer("arch", "Arch Desktop", crate::share::VERSION), peer("mac", "Davis's MacBook Air", 3)]));
+    }
     // `-viz`: the visualizer on, fed the desktop demo's made-up signal (demo only:
     // nothing plays in the demo, and a real Glass never fakes it).
     if std::env::args().any(|a| a == "-viz") {
@@ -296,4 +312,16 @@ pub fn device_songs() -> Vec<crate::share::FileMeta> {
         .enumerate()
         .map(|(i, (t, a, al, s))| crate::share::FileMeta { id: format!("demo{i}"), name: format!("{t}.flac"), size: *s as u64 * 110_000, title: (*t).into(), artist: (*a).into(), album: (*al).into(), duration_ms: *s as u64 * 1000 })
         .collect()
+}
+
+/// `-demoShare`: local files sharing runs for real in the demo, signed in as the demo's
+/// account, to share songs with another demo (the desktop's `GLASS_DEMO_SHARE`) on this
+/// network. Only other demos have that account: real devices never see them.
+pub fn real_sharing() -> bool {
+    std::env::args().any(|a| a == "-demoShare")
+}
+
+/// `-demoFolders`: the demo's Local Files reads real folders, for UI tests of adding one.
+pub fn real_folders() -> bool {
+    std::env::args().any(|a| a == "-demoFolders")
 }

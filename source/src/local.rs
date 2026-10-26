@@ -128,10 +128,25 @@ fn walk(dir: &Path, depth: usize, out: &mut Vec<LocalTrack>) {
             walk(&path, depth + 1, out);
             continue;
         }
-        if is_audio(&path) {
+        if is_audio(&path) && !in_cloud(&entry) {
             out.push(read_track(&path));
         }
     }
+}
+
+/// A song in a folder from iCloud Drive (or another cloud in Files) that isn't on the
+/// iPhone yet: left until the app has downloaded it (reading it here would download
+/// the songs one at a time while the scan waits).
+#[cfg(target_os = "ios")]
+fn in_cloud(entry: &std::fs::DirEntry) -> bool {
+    use std::os::ios::fs::MetadataExt;
+    const SF_DATALESS: u32 = 0x4000_0000;
+    entry.metadata().is_ok_and(|m| m.st_flags() & SF_DATALESS != 0)
+}
+
+#[cfg(not(target_os = "ios"))]
+fn in_cloud(_: &std::fs::DirEntry) -> bool {
+    false
 }
 
 /// A file Glass can play, by its extension.
@@ -456,13 +471,15 @@ type Covers = HashMap<String, Option<Option<Arc<[u8]>>>>;
 
 /// Serves embedded covers to egui's image loaders: `localcover://<path>`.
 /// Files are read off the UI thread, two at a time (a folder of albums on a
-/// slow disk would otherwise stall the window).
+/// slow disk would otherwise stall the window). (The iOS app has its own; see ios/.)
+#[cfg(not(glass_mobile))]
 pub struct CoverLoader {
     rt: tokio::runtime::Handle,
     slots: Arc<tokio::sync::Semaphore>,
     cache: Arc<Mutex<Covers>>,
 }
 
+#[cfg(not(glass_mobile))]
 impl CoverLoader {
     pub fn new(rt: tokio::runtime::Handle) -> Self {
         Self { rt, slots: Arc::new(tokio::sync::Semaphore::new(2)), cache: Arc::default() }
@@ -473,7 +490,7 @@ impl CoverLoader {
     }
 }
 
-fn read_cover(path: &Path) -> Option<Vec<u8>> {
+pub(crate) fn read_cover(path: &Path) -> Option<Vec<u8>> {
     let tagged = open(path)?;
     let tag = tagged.primary_tag().or_else(|| tagged.first_tag())?;
     let pic = tag.pictures().iter().find(|p| p.pic_type() == PictureType::CoverFront).or_else(|| tag.pictures().first())?;
@@ -496,6 +513,7 @@ fn cover_mime(b: &[u8]) -> &'static str {
     }
 }
 
+#[cfg(not(glass_mobile))]
 impl eframe::egui::load::BytesLoader for CoverLoader {
     fn id(&self) -> &str {
         "glass::local::CoverLoader"
@@ -559,13 +577,15 @@ pub struct LocalPlayer {
     pub active: bool,
     /// The slider position (0–1); every new file starts at it.
     volume: f32,
+    /// How many songs right after the current one were queued (`queue_songs`).
+    queued: usize,
 }
 
 impl LocalPlayer {
     pub fn new() -> Option<Self> {
         let stream = open_output()?;
         let sink = rodio::Sink::connect_new(stream.mixer());
-        Some(Self { stream: Some(stream), sink, paused_at: None, resume_at: 0, queue: Arc::default(), index: 0, active: false, volume: 1.0 })
+        Some(Self { stream: Some(stream), sink, paused_at: None, resume_at: 0, queue: Arc::default(), index: 0, active: false, volume: 1.0, queued: 0 })
     }
 
     /// The file playing (to mark it in lists, even after a rescan reorders them).
@@ -580,6 +600,7 @@ impl LocalPlayer {
     pub fn play(&mut self, queue: Arc<Vec<LocalTrack>>, index: usize) {
         self.queue = queue;
         self.index = index;
+        self.queued = 0;
         self.start_current();
     }
 
@@ -651,6 +672,45 @@ impl LocalPlayer {
         n
     }
 
+    /// Queues songs: after the current one and those queued before them, in order.
+    // Now Playing's queue on iOS (the desktop's assistant uses `enqueue`).
+    #[cfg_attr(not(glass_mobile), allow(dead_code))]
+    pub fn queue_songs(&mut self, tracks: Vec<LocalTrack>) -> usize {
+        let n = tracks.len();
+        let at = (self.index + 1 + self.queued).min(self.queue.len());
+        Arc::make_mut(&mut self.queue).splice(at..at, tracks);
+        self.queued += n;
+        n
+    }
+
+    /// How many of the songs after the current one were queued.
+    // Now Playing's queue on iOS (the desktop's assistant uses `enqueue`).
+    #[cfg_attr(not(glass_mobile), allow(dead_code))]
+    pub fn queued(&self) -> usize {
+        self.queued.min(self.queue.len().saturating_sub(self.index + 1))
+    }
+
+    /// Moves the song `from` places after the current one to `to` places after it.
+    /// One moved into or out of the queued songs joins or leaves them.
+    // Now Playing's queue on iOS (the desktop's assistant uses `enqueue`).
+    #[cfg_attr(not(glass_mobile), allow(dead_code))]
+    pub fn move_upcoming(&mut self, from: usize, to: usize) -> bool {
+        let (a, b) = (self.index + 1 + from, self.index + 1 + to);
+        if !self.active || a >= self.queue.len() || b >= self.queue.len() || a == b {
+            return false;
+        }
+        let queued = self.queued();
+        if from < queued && to >= queued {
+            self.queued -= 1;
+        } else if from >= queued && to < queued {
+            self.queued += 1;
+        }
+        let q = Arc::make_mut(&mut self.queue);
+        let t = q.remove(a);
+        q.insert(b, t);
+        true
+    }
+
     /// Removes queued (not yet playing) copies of these files: undo for `enqueue`.
     pub fn dequeue(&mut self, paths: &[PathBuf]) -> usize {
         let mut removed = 0;
@@ -696,6 +756,7 @@ impl LocalPlayer {
     pub fn next(&mut self) {
         if self.index + 1 < self.queue.len() {
             self.index += 1;
+            self.queued = self.queued.saturating_sub(1);
             self.start_current();
         } else {
             self.stop();
@@ -707,6 +768,7 @@ impl LocalPlayer {
             self.seek(0);
         } else {
             self.index -= 1;
+            self.queued = 0;
             self.start_current();
         }
     }

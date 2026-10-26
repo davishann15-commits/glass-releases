@@ -54,6 +54,7 @@ final class PolishUITests: XCTestCase {
         launch(["-route", "local"])
         let device = app.buttons.containing(NSPredicate(format: "label CONTAINS 'Arch Desktop'")).firstMatch
         XCTAssertTrue(device.waitForExistence(timeout: 20), "the other device shows in Local Files")
+        XCTAssertTrue(text("Davis's MacBook Air has an older Glass").exists, "one that can't share says which needs updating")
         shot("polish-3-local-devices")
         device.tap()
         let song = app.buttons.containing(NSPredicate(format: "label CONTAINS 'Stay With Me'")).firstMatch
@@ -74,7 +75,7 @@ final class PolishUITests: XCTestCase {
         XCTAssertTrue(search.waitForExistence(timeout: 20))
         search.tap()
         search.typeText("theme")
-        app.keyboards.buttons["search"].firstMatch.tap()
+        search.typeText("\n")
         let customize = app.buttons.matching(NSPredicate(format: "label == 'Customize'")).allElementsBoundByIndex.first { $0.frame.width > 0 }
         XCTAssertNotNil(customize)
         customize?.tap()
@@ -93,5 +94,19 @@ final class PolishUITests: XCTestCase {
         let glass = app.buttons["Preset glass"].firstMatch
         if glass.waitForExistence(timeout: 5) { glass.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap() }
         sleep(1)
+    }
+
+    /// A Spotify Free account: Glass opens and browses as for anyone; a song from Spotify
+    /// says it needs Premium instead of playing. (The demo has no account to log out of.)
+    func testFreeAccountBrowses() {
+        launch(["-demoFree", "-route", "playlist"])
+        let song = app.staticTexts["Golden Hour"].firstMatch
+        XCTAssertTrue(song.waitForExistence(timeout: 20), "the playlist opens")
+        XCTAssertTrue(text("playing needs Spotify Premium").waitForExistence(timeout: 10), "the player bar says why nothing from Spotify plays")
+        let row = app.staticTexts.matching(NSPredicate(format: "label == 'Golden Hour'")).allElementsBoundByIndex.first { $0.frame.minY > 150 && $0.frame.minY < 650 }
+        XCTAssertNotNil(row, "a row of the playlist")
+        row?.tap()
+        XCTAssertTrue(text("needs Spotify Premium").waitForExistence(timeout: 5), "tapping a song says it needs Premium")
+        shot("polish-6-free-account")
     }
 }

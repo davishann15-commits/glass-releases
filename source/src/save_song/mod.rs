@@ -68,6 +68,7 @@ pub struct Options {
 }
 
 /// `~/Music/Glass`
+#[cfg(not(glass_mobile))]
 pub fn default_dir() -> PathBuf {
     // Looked up once (on Linux it means reading user-dirs.dirs).
     static DIR: std::sync::LazyLock<PathBuf> = std::sync::LazyLock::new(|| {
@@ -80,6 +81,12 @@ pub fn default_dir() -> PathBuf {
     DIR.clone()
 }
 
+/// iOS: the app's Documents folder ("On My iPhone › Glass" in Files), which Local Files reads.
+#[cfg(glass_mobile)]
+pub fn default_dir() -> PathBuf {
+    crate::paths::documents()
+}
+
 /// The song's metadata, from Glass's Web API data.
 #[derive(Clone, Debug, Default)]
 pub struct Song {
@@ -89,6 +96,7 @@ pub struct Song {
     pub album_artists: Vec<String>,
     pub year: Option<String>,
     pub track_number: Option<u32>,
+    pub disc_number: Option<u32>,
     pub duration_sec: u32,
     pub cover_url: Option<String>,
     pub link: Option<String>,
@@ -112,6 +120,7 @@ pub fn song_from_item(item: &Value) -> Option<Song> {
         album_artists: names(&album["artists"]),
         year: album["release_date"].as_str().filter(|d| !d.is_empty()).map(String::from),
         track_number: item["track_number"].as_u64().map(|n| n as u32),
+        disc_number: item["disc_number"].as_u64().map(|n| n as u32),
         duration_sec: (item["duration_ms"].as_u64().unwrap_or(0) / 1000) as u32,
         cover_url: album["images"].as_array().and_then(|imgs| imgs.iter().max_by_key(|i| i["width"].as_u64().unwrap_or(0))).and_then(|i| i["url"].as_str()).map(String::from),
         link: item["external_urls"]["spotify"].as_str().map(String::from).or_else(|| item["uri"].as_str()?.strip_prefix("spotify:track:").map(|id| format!("https://open.spotify.com/track/{id}"))),
@@ -334,6 +343,9 @@ fn tag_mp3(path: &Path, song: &Song, cover: Option<&[u8]>) -> Result<()> {
     }
     if let Some(n) = song.track_number {
         tag.set_track(n);
+    }
+    if let Some(n) = song.disc_number {
+        tag.set_disk(n);
     }
     if let Some(link) = &song.link {
         tag.set_comment(link.clone());

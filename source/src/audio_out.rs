@@ -64,15 +64,22 @@ impl OutputWatch {
         match self.current.replace(now.clone()) {
             Some(before) if before != now => {
                 let gone = !still_there(&before);
-                // Marked before the bump, so a sink that sees the new generation sees this too.
-                let g = generation() + 1;
-                if gone {
-                    GONE.store(g, Ordering::Release);
-                }
-                GENERATION.store(g, Ordering::Release);
+                changed(gone);
                 Change::Moved { from: before, to: now, gone }
             }
             _ => Change::None,
         }
     }
+}
+
+/// The output changed: sinks reopen on the new one. `gone`: the device that was
+/// playing disappeared. (On iOS the app reports AVAudioSession's route changes here.)
+pub fn changed(gone: bool) -> u64 {
+    // Marked before the bump, so a sink that sees the new generation sees this too.
+    let g = generation() + 1;
+    if gone {
+        GONE.store(g, Ordering::Release);
+    }
+    GENERATION.store(g, Ordering::Release);
+    g
 }

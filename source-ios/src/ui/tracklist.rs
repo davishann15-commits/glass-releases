@@ -256,7 +256,7 @@ pub fn table(app: &mut App, ui: &mut Ui, rows: &[Row<'_>], opts: &Opts) {
         {
             let note = match l {
                 Some(t) => format!("Local file: {}", t.path.display()),
-                None if !app.share_peers.is_empty() => "This local song isn't on this computer. Right-click to get it from your other computers.".to_string(),
+                None if !app.share_peers.is_empty() => "This local song isn't on this computer. Right-click to get it from your other devices.".to_string(),
                 None => "This local song isn't on this computer. Put the file in a folder listed under Local Files to play it here.".to_string(),
             };
             resp.clone().on_hover_text(note);

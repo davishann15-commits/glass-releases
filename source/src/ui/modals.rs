@@ -1,4 +1,4 @@
-//! Dialogs over the window: confirmations, playlist and folder details, song info, the assistant welcome, pairing another computer, shortcuts and about.
+//! Dialogs over the window: confirmations, playlist and folder details, song info, the assistant welcome, shortcuts and about.
 
 use super::SHORTCUTS;
 use super::theme::{self, col};
@@ -8,12 +8,6 @@ use eframe::egui::{self, Align, Color32, Layout, RichText};
 use serde_json::json;
 
 pub fn show(app: &mut App, ctx: &egui::Context) {
-    // A pairing waits on the other computer, and only for a while: it comes first
-    // (another dialog waits, and shows again once the pairing is answered).
-    if app.pairing.is_some() {
-        pairing(app, ctx);
-        return;
-    }
     let Some(mut modal) = app.modal.take() else { return };
     let mut keep = true;
     let mut actions: Vec<Action> = Vec::new();
@@ -238,40 +232,5 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
     }
     for a in actions {
         app.act(a);
-    }
-}
-
-/// Another computer asks to pair, or this one does: both show the same code.
-fn pairing(app: &mut App, ctx: &egui::Context) {
-    let Some(p) = app.pairing.clone() else { return };
-    let mut answer = None;
-    let resp =
-        egui::Modal::new("pairing".into()).backdrop_color(Color32::from_black_alpha(140)).frame(theme::popup().inner_margin(egui::Margin::same(24)).corner_radius(theme::radius())).show(ctx, |ui| {
-            ui.set_max_width(460.0);
-            ui.label(RichText::new(format!("Pair with {}?", p.name)).font(theme::regular(20.0)));
-            ui.add_space(theme::sp(0.75));
-            let why = if p.incoming { format!("{} wants to share songs with this computer.", p.name) } else { format!("To share songs with {}, the two computers pair first.", p.name) };
-            ui.label(RichText::new(format!("{why} Pair them only if {} shows this same code:", p.name)).color(col::sub()));
-            ui.add_space(theme::sp(1.25));
-            ui.vertical_centered(|ui| {
-                ui.label(RichText::new(&p.code).font(theme::mono(34.0)).color(col::text()));
-            });
-            ui.add_space(theme::sp(1.25));
-            ui.label(RichText::new("Paired computers share without asking again. Settings → Your Library lists them.").font(theme::regular(12.0)).color(col::muted()));
-            ui.add_space(theme::sp(1.5));
-            ui.with_layout(Layout::right_to_left(Align::Min), |ui| {
-                if ui.button(RichText::new("Pair").font(theme::regular(14.0))).clicked() {
-                    answer = Some(true);
-                }
-                if ui.button("Don't pair").clicked() {
-                    answer = Some(false);
-                }
-            });
-        });
-    if resp.should_close() && answer.is_none() {
-        answer = Some(false);
-    }
-    if let Some(yes) = answer {
-        app.act(Action::SharePair { id: p.id, yes });
     }
 }

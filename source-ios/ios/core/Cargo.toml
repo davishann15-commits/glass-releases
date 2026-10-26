@@ -1,6 +1,6 @@
 [package]
 name = "glass-core"
-version = "1.0.0-beta.22"
+version = "1.0.0-beta.23"
 edition = "2024"
 description = "Glass for iOS: the shared Rust core (Spotify, playback, lyrics, local music, sharing, assistant) behind the SwiftUI app"
 license = "MIT"

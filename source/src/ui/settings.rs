@@ -235,23 +235,15 @@ fn body(app: &mut App, ui: &mut Ui, c: &Ctx) {
     row(
         ui,
         c,
-        "Share with Glass on your other computers",
+        "Share with Glass on your other devices",
         &format!(
-            "Send songs to Glass on your other computers on this network (signed in to this account), and get playlists' missing local songs from them. Received songs go to {}. The first time two computers connect, both show a code to check before anything is shared.",
+            "Glass on your other devices (a Mac, a Linux PC, an iPhone) on this network, signed in to this account, shows up in Local Files by itself: click one to see its songs and get them, or right-click songs to send them. Playlists get their missing local songs from your other devices. Received songs go to {}.",
             inbox.display()
         ),
         |ui| {
             toggle(ui, &mut app.settings.share_local_files);
         },
     );
-    let paired = app.paired_computers();
-    for p in paired {
-        row(ui, c, "Paired with", &p.name, |ui| {
-            if ui.button("Forget").on_hover_text("It has to be paired again (with a code) to share").clicked() {
-                app.act(Action::ShareForget(p.key.clone()));
-            }
-        });
-    }
     if app.settings.show_local_files {
         let dirs = app.settings.local_dirs.clone();
         for d in dirs {

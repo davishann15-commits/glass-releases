@@ -7,7 +7,7 @@ A Spotify player for the Mac and iPhone that looks like a terminal window made o
 **[Download the latest version](https://github.com/davishann15-commits/glass-releases/releases/latest)**<br>
 macOS 12 or later, Apple silicon or Intel. Playback needs Spotify Premium.
 
-**[Get Glass for iPhone](https://github.com/davishann15-commits/glass-releases/releases/tag/ios-v1.0.0-beta.22)** (new)<br>
+**[Get Glass for iPhone](https://github.com/davishann15-commits/glass-releases/releases/tag/ios-v1.0.0-beta.23)** (new)<br>
 iOS 26 or later, iPhone and iPad, installed with SideStore, AltStore, Sideloadly or TrollStore.
 
 **[Get Glass for Arch Linux](https://github.com/davishann15-commits/glass-releases/releases/tag/arch-v1.0.0-beta.22)** (new)<br>
@@ -73,9 +73,9 @@ once you've signed in to it.
 
 ## Build from source
 
-The [`source/`](source/) folder contains the Glass **1.0.0-beta.22** source code, the same
+The [`source/`](source/) folder contains the Glass **1.0.0-beta.23** source code, the same
 version as the latest app release. The source was published from development
-commit `8494d8210eb5abab41f93151bb39abb92d697110`.
+commit `d8189e10e808533bfab1614714a04e49a06b9cec`.
 
 Install stable Rust with [rustup](https://rustup.rs). On macOS, also install
 Apple's command-line developer tools (`xcode-select --install`), Autoconf,
@@ -115,7 +115,7 @@ and Control Center, swipes, and putting your own music into Apple Music.
 ### Install on iPhone
 
 Glass isn't on the App Store, so it's installed as an `.ipa`. Download
-`Glass-1.0.0-beta.22.ipa` from the [iPhone release](https://github.com/davishann15-commits/glass-releases/releases/tag/ios-v1.0.0-beta.22), then use one of these:
+`Glass-1.0.0-beta.23.ipa` from the [iPhone release](https://github.com/davishann15-commits/glass-releases/releases/tag/ios-v1.0.0-beta.23), then use one of these:
 
 - **SideStore** or **AltStore**: add the `.ipa` in the app. It's signed with your
   own Apple ID; with a free Apple ID it has to be refreshed every 7 days, which
@@ -253,9 +253,9 @@ Keychain. Playing music needs Spotify Premium.
 
 ### Good to know
 
-- Sharing with the Mac app needs a Mac app built from this version
-  ([`source-ios/`](source-ios/)): Mac Glass 1.0.0-beta.22 still pairs with a
-  code, which the iPhone doesn't do. The next Mac release will match.
+- Sharing with Glass on a Mac or a PC needs Glass 1.0.0-beta.23 or later there
+  (earlier versions paired with a code). An older one is listed with a note to
+  update it.
 - Add to Apple Music writes to the Music app's library directly. Glass keeps a
   copy from before each change, but try it first on a phone whose library you
   can afford to lose.
@@ -265,8 +265,8 @@ Keychain. Playing music needs Spotify Premium.
 ### Build Glass for iPhone from source
 
 The [`source-ios/`](source-ios/) folder contains the source code of Glass for iPhone
-**1.0.0-beta.22**, the same version as the `.ipa` (development commit
-`495c14c`). It's the whole tree: the iPhone app in `ios/` shares most of its code
+**1.0.0-beta.23**, the same version as the `.ipa` (development commit
+`d8189e1`). It's the whole tree: the iPhone app in `ios/` shares most of its code
 with the Mac app in `src/`. You need a Mac with Xcode 26, Rust with the iOS targets
 and [XcodeGen](https://github.com/yonaskolb/XcodeGen):
 
@@ -365,10 +365,14 @@ organized by album, song, artist or genre. Local songs in your Spotify
 playlists play too, and you can make playlists of local files that live only
 in Glass.
 
-If you use Glass on more than one computer, it can send songs between them over
-your home network. This is off until you turn it on in Settings → Your Library,
-on each computer. The first time two computers connect, both show the same
-six-digit code, and nothing is sent until you confirm it on each one.
+Glass on your other devices (another Mac, a Linux PC, or an iPhone with
+[Glass for iPhone](#glass-for-iphone)) shows up at the top of Local Files by
+itself when it's open on the same network and signed in to the same Spotify
+account. There's no code to type. Click one to see its songs, pick the ones you
+want and get them, or send yours with right-click → Send to. A playlist's local
+songs that aren't on this Mac can come from your other devices too. Transfers
+are encrypted, go straight between the two devices, and happen only between
+devices signed in to your account. Settings → Your Library turns this off.
 
 ## Make it yours
 
@@ -437,7 +441,7 @@ or liking more than 20 songs in one go asks you first.
 Glass has no analytics, telemetry or crash reporting. It talks to Spotify,
 to LRCLIB for lyrics and to GitHub for updates. It contacts JioSaavn and
 YouTube Music only when you save songs, OpenAI only if you use the assistant,
-and your other computers only if you turn on sharing. The Activity page lists
+and Glass on your other devices on your network, unless you turn sharing off. The Activity page lists
 who Glass talks to and logs its requests to Spotify and LRCLIB.
 
 | Where | What |

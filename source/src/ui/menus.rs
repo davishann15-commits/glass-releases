@@ -315,7 +315,7 @@ pub fn track(app: &mut App, ui: &mut Ui, item: &Value, playlist: Option<(&str, b
     }
     if model::b(item, "is_local") && !app.share_peers.is_empty() {
         let missing = missing_local(app, &uris);
-        if !missing.is_empty() && menu_item(ui, "Get from your other computers") {
+        if !missing.is_empty() && menu_item(ui, "Get from your other devices") {
             app.act(Action::GetFromDevices(missing));
         }
     }
@@ -350,7 +350,7 @@ pub fn playlist(app: &mut App, ui: &mut Ui, p: &Value) {
     {
         let u: Vec<String> = model::items(&v).iter().map(|i| s(model::playlist_entry(i), "uri").to_string()).filter(|u| !u.is_empty()).collect();
         let missing = missing_local(app, &u);
-        if !missing.is_empty() && menu_item(ui, &format!("Get {} missing local {} from your other computers", missing.len(), if missing.len() == 1 { "song" } else { "songs" })) {
+        if !missing.is_empty() && menu_item(ui, &format!("Get {} missing local {} from your other devices", missing.len(), if missing.len() == 1 { "song" } else { "songs" })) {
             app.act(Action::GetFromDevices(missing));
         }
     }

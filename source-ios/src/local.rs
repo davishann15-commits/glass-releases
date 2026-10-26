@@ -76,10 +76,6 @@ pub fn scan(dirs: &[PathBuf]) -> Vec<LocalTrack> {
 /// sits inside another within `DEPTH` folders (it's read as part of that one).
 pub fn tidy_sources(dirs: &[PathBuf]) -> Vec<PathBuf> {
     let real = |d: &PathBuf| d.canonicalize().unwrap_or_else(|_| d.components().collect());
-    // iOS: folders in the app's Documents as they are this run (see `paths::rebase`),
-    // so an earlier install's or the other spelling's copy is one with this one.
-    #[cfg(glass_mobile)]
-    let dirs: &[PathBuf] = &dirs.iter().map(|d| crate::paths::rebase(d)).collect::<Vec<_>>();
     let all: Vec<(PathBuf, PathBuf)> = dirs.iter().map(|d| (d.clone(), real(d))).collect();
     // Outer folders first, so each is checked against the ones kept (a folder
     // inside a dropped one may be too deep for the folder that dropped it).
@@ -132,10 +128,25 @@ fn walk(dir: &Path, depth: usize, out: &mut Vec<LocalTrack>) {
             walk(&path, depth + 1, out);
             continue;
         }
-        if is_audio(&path) {
+        if is_audio(&path) && !in_cloud(&entry) {
             out.push(read_track(&path));
         }
     }
+}
+
+/// A song in a folder from iCloud Drive (or another cloud in Files) that isn't on the
+/// iPhone yet: left until the app has downloaded it (reading it here would download
+/// the songs one at a time while the scan waits).
+#[cfg(target_os = "ios")]
+fn in_cloud(entry: &std::fs::DirEntry) -> bool {
+    use std::os::ios::fs::MetadataExt;
+    const SF_DATALESS: u32 = 0x4000_0000;
+    entry.metadata().is_ok_and(|m| m.st_flags() & SF_DATALESS != 0)
+}
+
+#[cfg(not(target_os = "ios"))]
+fn in_cloud(_: &std::fs::DirEntry) -> bool {
+    false
 }
 
 /// A file Glass can play, by its extension.

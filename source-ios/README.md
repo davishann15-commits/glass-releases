@@ -13,7 +13,9 @@ comparison, including what can't be done and why.
 
 - macOS 12+ (Apple silicon or Intel), or Arch Linux (x86_64 or aarch64;
   X11 or Wayland)
-- Spotify **Premium** (required for playback through librespot)
+- A Spotify account. Playing songs from Spotify needs **Premium** (Spotify streams
+  only to Premium accounts); with a free account Glass browses, plays Local Files
+  and saves songs (Share ▸ Download as M4A/MP3).
 - To build: Rust (`rustup`, stable)
 
 ## Install
@@ -162,31 +164,36 @@ added twice, and each file is listed once.
   the file keeps its date. Changing a title or artist can stop a playlist from
   finding that file, since that's how it's recognised.
 
-### Between your computers
+### Between your devices
 
-Glass on your other computers shows up at the top of Local Files when it's on
-the same network and signed in to the same Spotify account (Settings → Your
-Library → *Share with Glass on your other computers*; off until you turn it on, on
-each computer). The first time two computers connect, both show the same
-six-digit code, and nothing is shared until you confirm it on each; after that
-they're paired (Settings lists them, with *Forget*).
+Glass on your other devices (a Mac, a Linux PC, an iPhone) shows up at the top
+of Local Files by itself when it's open on the same network and signed in to
+the same Spotify account. There's nothing to set up and no code to type
+(Settings → Your Library → *Share with Glass on your other devices* turns it
+off).
 
-- **Send songs**: right-click songs (⌘/⇧-click for several) → *Send to* →
-  the computer.
+- **Get songs from another device**: click it in Local Files to see its songs,
+  pick the ones you want (or *pick all*) and *get* them. Songs already here are
+  marked and left out.
+- **Send songs**: right-click songs (⌘/⇧-click for several) → *Send to* → the
+  device.
 - **Get a playlist's missing local songs**: right-click a greyed-out local
-  song → *Get from your other computers*, or *Get N missing local songs from
-  your other computers* in the playlist's ⋯ menu. Whichever computer has the
+  song → *Get from your other devices*, or *Get N missing local songs from
+  your other devices* in the playlist's ⋯ menu. Whichever device has the
   file sends it.
 
 Received songs are saved in `Music/Glass`, which joins Local Files, so they
-play straight away (songs already here aren't sent again). Devices find each
-other with Bonjour/mDNS; each transfer is encrypted (Noise), and before
-anything is sent both sides prove they're one of your account's Spotify
-Connect devices, by an HMAC of that connection's handshake keyed with their
-device ID, checked against the devices Spotify lists for your account. Nothing
-goes through a server, so both computers need to be on the same network. On
-macOS, allow Glass when asked about finding devices on your local network; on
-Linux with a firewall, allow mDNS (UDP 5353) and TCP 47321.
+play straight away. Devices find each other with Bonjour/mDNS and are listed
+once they answer (a Glass that quit without saying so, or a computer that's
+asleep, isn't). A Glass of your account that speaks an older or newer version
+of sharing is listed with which one needs updating. Each transfer is
+encrypted (Noise), and before anything is sent both sides prove they're
+signed in to your account: an HMAC of that connection's handshake, keyed with
+a secret made from your username and email address, which Spotify shows only
+to your account (the secret itself is never sent). Nothing goes through a
+server, so both devices need to be on the same network. On macOS and iOS,
+allow Glass when asked about your local network; on Linux with a firewall,
+allow mDNS (UDP 5353) and TCP 47321.
 
 Glass plays these files with a patched copy of librespot's player, kept in
 `vendor/librespot-playback` (see GLASS.md there for exactly what changed).
@@ -432,10 +439,15 @@ settings. Glass can't see your ChatGPT conversations.
   effect. Settings → Appearance shows which one is active.
 - **Reduce Transparency** (System Settings → Accessibility) makes the window
   opaque; **Reduce Motion** turns off animations unless the theme says otherwise.
-- **Linux** (untested): transparency only — blur depends on your compositor
-  (KWin, Hyprland, picom rules). Without one, Glass keeps the background at
-  least 88% opaque for legibility; set `GLASS_LINUX_BLUR=1` if your
-  compositor blurs Glass.
+- **Linux** (Wayland): Glass asks the compositor to blur what's behind it
+  (ext-background-effect-v1: Hyprland, KWin and others that support it).
+  How strongly it blurs is the compositor's setting — on Hyprland,
+  `decoration:blur` size 7 with 2 passes looks like the Mac's 28 pt — so
+  `blur` only turns it on or off. Without compositor blur (X11, or a
+  compositor without the protocol), Glass keeps the background at least 88%
+  opaque for legibility; set `GLASS_LINUX_BLUR=1` if your compositor blurs
+  Glass anyway (picom rules), or `0` if it doesn't. The Mac's window buttons
+  (close, minimize, zoom) are drawn in the title strip.
 
 ## How it works
 
@@ -488,7 +500,6 @@ pages and Browse fail until Glass is updated.
 | `~/Library/Application Support/Glass/lyrics_choices.json` | Your lyrics picks and per-song timing |
 | `~/Library/Application Support/Glass/local_playlists.json` | Glass local playlists |
 | `~/Library/Application Support/Glass/assistant/` | Assistant registration details (no tokens: those are in the Keychain) |
-| `~/Library/Application Support/Glass/share_key`, `share_paired.json` | This computer's sharing key (mode 0600) and the computers paired with it |
 | `~/Library/Application Support/Glass/queries.json` | Spotify's current page queries, when Glass had to read them from Spotify.app |
 | `~/Library/Caches/Glass/lyrics/` | LRCLIB answers and saved translations, one small file per song (clear in Settings → Lyrics) |
 | `~/Library/Caches/Glass/artwork/`, `updates/`, `glass.sock` | The playing song's cover (for the media controls), a downloaded update, and the socket that keeps Glass to one copy |
@@ -514,11 +525,15 @@ touches your settings, library or accounts; `GLASS_DEMO=/some/folder` uses (and
 keeps) that folder instead.
 
 `GLASS_ROUTE` (`library`, `nowplaying`, `home`, `playlist`, `artist`,
-`search`, `liked`, `local`, `settings`, `activity`), `GLASS_RIGHT` (`queue`,
+`search`, `liked`, `local`, `device`, `settings`, `activity`), `GLASS_RIGHT` (`queue`,
 `devices`, `lyrics`, `assistant`), `GLASS_LYRICS` (`word`, `line`, `plain`,
 `instrumental`, `none`, `ambiguous`), `GLASS_THEME_PANEL=1` and
 `GLASS_WINDOW=900x600` set up the demo for checking layouts. Demo lyrics are
 sample data answered from memory; the demo never contacts LRCLIB.
+`GLASS_DEMO_SHARE=/a/folder/of/songs` is the one exception to "no network": Local
+Files reads that folder and sharing runs for real, signed in as the demo's account
+(which only other demos have), to test sharing between two demos or with the iPhone
+app (`ios/scripts/live-share.sh`).
 
 Live tests are opt-in: `cargo test --release live_ -- --ignored --nocapture`.
 `live_lrclib` looks up real songs on lrclib.net (line-synced, plain-only,

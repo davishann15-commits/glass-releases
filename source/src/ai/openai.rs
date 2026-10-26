@@ -59,24 +59,23 @@ impl ApiError {
         matches!(self, ApiError::TryLater(_) | ApiError::Network(_) | ApiError::Http { status: 500..=599, .. })
     }
 
+    /// In plain words for the user (the details, such as status codes and request
+    /// IDs, go to the log).
     pub fn message(&self, kind: BillingKind) -> String {
+        log::warn!("assistant: {self:?}");
         match self {
             ApiError::NotEligible => "ChatGPT plan usage isn't available for this account or workspace. Eligible ChatGPT Plus and Pro plans can use it.".into(),
             ApiError::UsageLimit => "Usage limit reached — your ChatGPT plan's or this app's limit. Review it in ChatGPT settings.".into(),
-            ApiError::TryLater(m) => format!("OpenAI couldn't take the request right now ({m}). Try again in a moment."),
-            ApiError::Unsupported(p) => format!("This model or account doesn't support part of the request ({p})."),
-            ApiError::Unauthorized(m) if kind == BillingKind::ChatGptPlan => format!("OpenAI didn't accept the ChatGPT sign-in ({m}). Check the account in Settings → Assistant, or sign in again."),
-            ApiError::Unauthorized(m) => format!("OpenAI didn't accept the API key ({m})."),
-            ApiError::Forbidden(m) => format!("OpenAI declined the request: {m}"),
-            ApiError::RateLimited(m) => format!("Rate limited by OpenAI ({m}). Try again in a moment."),
+            ApiError::TryLater(_) => "OpenAI couldn't take the request right now. Try again in a moment.".into(),
+            ApiError::Unsupported(_) => "This model or account can't do part of that. Try another model in Settings › Assistant.".into(),
+            ApiError::Unauthorized(_) if kind == BillingKind::ChatGptPlan => "OpenAI didn't accept the ChatGPT sign-in. Sign in again in Settings › Assistant.".into(),
+            ApiError::Unauthorized(_) => "OpenAI didn't accept the API key. Check it in Settings › Assistant.".into(),
+            ApiError::Forbidden(_) => "OpenAI declined the request.".into(),
+            ApiError::RateLimited(_) => "OpenAI is busy right now. Try again in a moment.".into(),
             ApiError::NoCredit => "Your OpenAI API account is out of credits or over its spending limit. Check billing on platform.openai.com.".into(),
-            ApiError::Http { status, code, message, request_id } => {
-                let code = if code.is_empty() { String::new() } else { format!(" {code}") };
-                let id = if request_id.is_empty() { String::new() } else { format!(" · request {request_id}") };
-                format!("OpenAI answered {status}{code}: {message}{id}")
-            }
-            ApiError::Network(e) => format!("Couldn't reach OpenAI ({e}). The assistant needs a connection."),
-            ApiError::Incomplete(why) => format!("The reply stopped early ({why})."),
+            ApiError::Http { .. } => "OpenAI couldn't answer right now. Try again.".into(),
+            ApiError::Network(_) => "Couldn't reach OpenAI. The assistant needs a connection.".into(),
+            ApiError::Incomplete(_) => "The reply stopped early. Try again.".into(),
             ApiError::Interrupted => "The connection dropped before the reply finished.".into(),
         }
     }

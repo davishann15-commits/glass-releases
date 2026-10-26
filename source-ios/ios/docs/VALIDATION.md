@@ -11,9 +11,11 @@ Nothing here used your Spotify or ChatGPT accounts for writes; see "Your data" b
 | UI tests (`GlassUITests`, XCUITest, demo data) | 12 tests, all pass | Below. Screenshots in `docs/screenshots/` |
 | UI tests (`AppleMusicUITests`, demo data) | 2 tests, all pass | Picking songs, the sheet, a demo run's progress and result; Settings opens the setup |
 | UI tests (`QueueUITests`, demo data) | 1 test, passes | Now Playing's queue: sections, dragging Kyoto's handle onto Bloom queues it, swiping a "Next from" song queues it |
-| UI tests (`PolishUITests`, demo data) | 3 tests, pass | Now Playing ▸ playlist opens on the playing song (the 14th of 15) and a song swiped right is queued; Local Files lists another device, its songs list (ones already here marked), two are picked and fetched; the bottom bar under the rose preset |
+| UI tests (`PolishUITests`, demo data) | 4 tests, pass | Now Playing ▸ playlist opens on the playing song (the 14th of 15) and a song swiped right is queued; Local Files lists another device, its songs list (ones already here marked), two are picked and fetched, and a Mac with an older Glass is listed as needing an update; the bottom bar under the rose preset; a Spotify Free account (`-demoFree`) browses, the player bar says playing needs Premium and a tapped song says so |
+| Sharing for real (`scripts/live-share.sh`: `SharingLiveUITests` + desktop `live_demo_computer`) | passes, twice in a row | The simulator and the desktop demo (`-demoShare`, `GLASS_DEMO_SHARE`) over this Mac's network: the iPhone finds the computer, lists its songs, gets two (they play from Local Files) and sends one; then a computer finds the iPhone, lists its songs, gets one and sends one. Skipped in the normal suite |
+| UI tests (`LocalFoldersUITests`, demo data, real files) | 1 test, passes | "add a folder" → the Files picker → On My iPhone › Spotify Local → Open: listed as "Spotify Local", its songs (a subfolder's too) list; still there after a relaunch; Settings › Remove, relaunch: gone. Needs `scripts/sim-files-fixture.sh` first |
 | Add to Apple Music core tests (`cargo test --lib apple_music`) | 10 pass | New and existing libraries: rows and triggers, covers (and iOS 26.4's local-source rows), alphabetical repair, duplicates left alone, albums by album artist, playlists, removed files' entries, a damaged library refused, lyrics cleanup, cover color |
-| Core Rust tests on the Mac (`ios/core`, `cargo test --lib`) | 212 pass, 0 fail, 13 ignored | The shared desktop modules' tests run in the iOS configuration (`cfg(glass_mobile)`), plus the core's own (sign-in redirect, DNS-SD TXT records, sharing transfer wording, web-player chunk map) |
+| Core Rust tests on the Mac (`ios/core`, `cargo test --lib`) | 233 pass, 0 fail, 14 ignored | The shared desktop modules' tests run in the iOS configuration (`cfg(glass_mobile)`), plus the core's own (sign-in redirect, DNS-SD TXT records, sharing transfer wording, web-player chunk map) |
 | Desktop (`cargo check --all-targets`, `cargo test`, `cargo build`) | see "Builds" below | |
 
 UI tests:
@@ -70,12 +72,21 @@ Install with your own signing team (see BUILD.md), then:
 7. EQ presets and mono are audible; visualizer follows the music.
 8. Save a song as M4A and MP3 (Share ▸ Download as …); it shows in Local Files and Files.
 9. Import songs from Files; edit a song's tags and cover; local playlists; Spotify playlists'
-   local songs play from Documents.
+   local songs play from Documents. Add a folder from iCloud Drive whose songs aren't
+   downloaded ("Downloading N songs to this iPhone…", then they list), one from another app's
+   space (On My iPhone › that app) and one from On My iPhone; all three are still there after
+   relaunching and after installing a new build; Settings › Remove takes one away for good.
+9a. Sign in with a Spotify Free account: Glass stays open, browses, plays Local Files and
+    saves songs; a Spotify song says it needs Premium; Log out, then sign in with a Premium
+    account, and songs play here.
 10. Sharing: with the desktop Glass (or another iPhone) open on the same Wi-Fi and account,
     Local Files lists it by itself (no code); tap it, its songs list, ones already here are
     marked; pick a few, Get → they arrive in Local Files. Send songs the other way; a
-    playlist's missing local songs come from the Mac. iOS asks for local-network access the
-    first time. A Glass signed in to another account doesn't show up.
+    playlist's missing local songs come from the Mac. On the Mac, Local Files lists the
+    iPhone: click it, pick songs, get them. iOS asks for local-network access the first
+    time (refuse it once: Local Files says how to allow it). A Glass signed in to another
+    account doesn't show up; the released Mac 1.0.0-beta.22 is listed as needing an update.
+    Quit Glass on the Mac with Force Quit and reopen it: the iPhone lists it once, not twice.
 11. Lyrics translation with Apple's on-device engine: on a song in another language, tap 文A
     in the lyrics view; iOS asks to download the two languages (once); the translation then
     appears under each line (tap 文A again for the translation alone).

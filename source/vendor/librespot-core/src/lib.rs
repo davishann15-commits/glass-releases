@@ -23,6 +23,9 @@ pub mod diffie_hellman;
 pub mod error;
 pub mod file_id;
 pub mod http_client;
+// Glass: what sysinfo would read, on iOS (where sysinfo doesn't build).
+#[cfg(target_os = "ios")]
+mod ios_sys;
 pub mod login5;
 pub mod mercury;
 pub mod packet;

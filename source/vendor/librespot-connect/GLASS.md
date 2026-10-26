@@ -38,6 +38,18 @@ Changes (all marked `Glass` in the source):
   shouldn't get the DJ's closing line for the song skipped.
 - `src/state.rs` — the device reports `supports_dj`, so other Spotify apps
   can start the DJ on Glass.
+- `src/spirc.rs` — when the main loop ends on its own (the session or a
+  dealer stream died), `SessionDisconnected` goes to the player at once.
+  Upstream sent it only from `handle_disconnect`, after two requests to
+  Spotify that fail when the network is what went away, so the app never
+  heard and kept sending commands to the closed task ("Internal error
+  { channel closed }"); it isn't sent twice. `Shutdown` ends the loop even
+  when telling Spotify fails.
+- `src/spirc.rs`, `src/state/tracks.rs`, `src/glass.rs` — the queue:
+  `set_queue_hook` hears what's next with each state update (URIs, and which
+  the user queued; with `Spirc::glass_id` to tell devices apart), and
+  `Spirc::glass_move_next` moves a song listed next (queued songs stay ahead
+  of the rest; a context song moved in among them becomes queued).
 - `Cargo.toml` — `http` and `protobuf-json-mapping`.
 
 The DJ's voice itself is in the app (`src/dj.rs`): each line's SSML is

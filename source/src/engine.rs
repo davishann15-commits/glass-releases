@@ -17,6 +17,13 @@ use librespot_playback::mixer::{self, MixerConfig};
 use librespot_playback::player::{Player, PlayerEvent};
 use serde_json::{Value, json};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+/// How Spotify shows this device to the account's other apps.
+#[cfg(glass_mobile)]
+const DEVICE_TYPE: DeviceType = DeviceType::Smartphone;
+#[cfg(not(glass_mobile))]
+const DEVICE_TYPE: DeviceType = DeviceType::Computer;
 
 #[derive(Debug, Clone)]
 pub enum EngineEvent {
@@ -54,7 +61,13 @@ pub enum EngineEvent {
         context: bool,
         track: bool,
     },
+    /// This device's Connect session or task is gone (reported once per engine, and not
+    /// for one the app dropped itself): start a new engine.
     SessionLost,
+    /// What's next on this device: each song's URI and whether it was queued (librespot's
+    /// own list, which `Engine::move_next` reorders). Only iOS's queue reads it.
+    #[cfg_attr(not(glass_mobile), allow(dead_code))]
+    Upcoming(Vec<(String, bool)>),
 }
 
 /// Shuffle and repeat for a new load. librespot turns both off with each one;
@@ -81,6 +94,20 @@ pub struct Engine {
     pub spirc: Spirc,
     pub device_id: String,
     pub session: Session,
+    /// Given up: dropped by the app, or reported lost. It reports nothing more.
+    gone: Arc<AtomicBool>,
+    /// Its Connect task has ended.
+    #[cfg_attr(not(glass_mobile), allow(dead_code))]
+    ended: Arc<AtomicBool>,
+}
+
+impl Drop for Engine {
+    /// An engine the app lets go of is shut down (its Connect task and player end)
+    /// without reporting itself lost.
+    fn drop(&mut self) {
+        self.gone.store(true, Ordering::SeqCst);
+        let _ = self.spirc.shutdown();
+    }
 }
 
 pub fn audio_cache_dir() -> std::path::PathBuf {
@@ -111,6 +138,11 @@ impl Engine {
         let session_config = SessionConfig { client_id: settings.client_id.clone(), device_id: device_id(), proxy, autoplay: Some(settings.autoplay), ..Default::default() };
         // No size limit here: librespot would evict downloads. `Downloads::prune`
         // keeps the streaming part of the cache within the user's limit instead.
+        // iOS keeps no reusable login on disk (credentials belong in the Keychain): the
+        // engine signs in with a fresh access token each time it starts.
+        #[cfg(glass_mobile)]
+        let cache = Cache::new(None::<std::path::PathBuf>, Some(config_dir()), Some(audio_cache_dir()), None).ok();
+        #[cfg(not(glass_mobile))]
         let cache = Cache::new(Some(config_dir()), Some(config_dir()), Some(audio_cache_dir()), None).ok();
         let session = Session::new(session_config, cache);
         let device_id = session.device_id().to_string();
@@ -134,10 +166,31 @@ impl Engine {
 
         let mixer_fn = mixer::find(None).ok_or_else(|| anyhow!("no mixer"))?;
         let mixer = mixer_fn(MixerConfig::default()).map_err(|e| anyhow!("{e}"))?;
+        // iOS: the phone's own volume is the volume (as in every other app), so the
+        // audio goes out at full scale; Connect's volume only follows it. (The soft
+        // mixer's log curve put 70 % at −18 dB, under the system volume.)
+        #[cfg(glass_mobile)]
+        let volume = Box::new(mixer::NoOpVolume);
+        #[cfg(not(glass_mobile))]
+        let volume = mixer.get_soft_volume();
         // The output opens when something first plays here, not before (see `DspSink`).
-        let player = Player::new(player_config, session.clone(), mixer.get_soft_volume(), move || Box::new(DspSink::new(Box::new(audio_backend::try_open_default), dsp)));
+        let player = Player::new(player_config, session.clone(), volume, move || Box::new(DspSink::new(Box::new(audio_backend::try_open_default), dsp)));
 
         let on_event = Arc::new(on_event);
+        let gone = Arc::new(AtomicBool::new(false));
+        let ended = Arc::new(AtomicBool::new(false));
+        // "Lost" once per engine, from whichever sign comes first: the player's
+        // SessionDisconnected, or the Connect task ending (librespot's event used to come
+        // only after requests that fail when the network is what went away). Without
+        // it the app kept a dead engine: "Internal error { channel closed }".
+        let lost = {
+            let (gone, on_event) = (gone.clone(), on_event.clone());
+            Arc::new(move || {
+                if !gone.swap(true, Ordering::SeqCst) {
+                    on_event(EngineEvent::SessionLost);
+                }
+            })
+        };
         // The DJ's lines around each song Connect starts (see dj.rs).
         {
             let on_event = on_event.clone();
@@ -152,7 +205,10 @@ impl Engine {
             }));
         }
         let mut events = player.get_player_event_channel();
+        let lost_event = lost.clone();
+        let on_player_event = on_event.clone();
         tokio::spawn(async move {
+            let on_event = on_player_event;
             while let Some(ev) = events.recv().await {
                 let mapped = match ev {
                     PlayerEvent::Playing { track_id, position_ms, .. } => Some(EngineEvent::Playing { uri: track_id.to_uri().unwrap_or_default(), position_ms }),
@@ -168,7 +224,10 @@ impl Engine {
                     PlayerEvent::VolumeChanged { volume } => Some(EngineEvent::Volume(volume)),
                     PlayerEvent::ShuffleChanged { shuffle } => Some(EngineEvent::Shuffle(shuffle)),
                     PlayerEvent::RepeatChanged { context, track } => Some(EngineEvent::Repeat { context, track }),
-                    PlayerEvent::SessionDisconnected { .. } => Some(EngineEvent::SessionLost),
+                    PlayerEvent::SessionDisconnected { .. } => {
+                        lost_event();
+                        None
+                    }
                     _ => None,
                 };
                 if let Some(m) = mapped {
@@ -178,18 +237,47 @@ impl Engine {
         });
 
         let connect_config =
-            ConnectConfig { name: settings.device_name.clone(), device_type: DeviceType::Computer, initial_volume: (settings.volume.clamp(0.0, 1.0) * u16::MAX as f32) as u16, ..Default::default() };
+            ConnectConfig { name: settings.device_name.clone(), device_type: DEVICE_TYPE, initial_volume: (settings.volume.clamp(0.0, 1.0) * u16::MAX as f32) as u16, ..Default::default() };
         let (spirc, task) = Spirc::new(connect_config, session.clone(), credentials, player, mixer).await.map_err(|e| anyhow!("Spotify Connect: {e}"))?;
-        tokio::spawn(task);
+        // What's next, for the queue; an older device's last reports are left out.
+        {
+            let (id, gone, on_event) = (spirc.glass_id(), gone.clone(), on_event.clone());
+            librespot_connect::glass::set_queue_hook(Box::new(move |from, upcoming| {
+                if from == id && !gone.load(Ordering::SeqCst) {
+                    on_event(EngineEvent::Upcoming(upcoming));
+                }
+            }));
+        }
+        {
+            let ended = ended.clone();
+            tokio::spawn(async move {
+                task.await;
+                ended.store(true, Ordering::SeqCst);
+                lost();
+            });
+        }
         // librespot writes its reusable login with the default permissions; the folder
         // is private (see `config::make_private_dir`), and so is the file.
         let _ = crate::config::make_private_dir();
-        #[cfg(unix)]
+        #[cfg(all(unix, not(glass_mobile)))]
         {
             use std::os::unix::fs::PermissionsExt;
             let _ = std::fs::set_permissions(config_dir().join("credentials.json"), std::fs::Permissions::from_mode(0o600));
         }
-        Ok(Self { spirc, device_id, session })
+        Ok(Self { spirc, device_id, session, gone, ended })
+    }
+
+    /// The engine can still play: its Connect task runs and its session is valid.
+    #[cfg_attr(not(glass_mobile), allow(dead_code))]
+    pub fn running(&self) -> bool {
+        !self.gone.load(Ordering::SeqCst) && !self.ended.load(Ordering::SeqCst) && !self.session.is_invalid()
+    }
+
+    /// Moves the song listed next at `from` to `to` (indices into the last
+    /// `EngineEvent::Upcoming` list; `uri` is the song meant).
+    #[cfg_attr(not(glass_mobile), allow(dead_code))]
+    pub fn move_next(&self, uri: &str, from: usize, to: usize) -> Result<()> {
+        self.spirc.glass_move_next(uri.to_string(), from, to).map_err(|e| anyhow!("{e}"))
     }
 
     /// Plays a Web API play body (`context_uri` or `uris`, `offset`, `position_ms`) here.
@@ -245,12 +333,6 @@ pub fn item_json(a: &AudioItem) -> Value {
             let artists: Vec<Value> = artists.iter().map(|n| json!({ "name": n, "type": "artist" })).collect();
             json!({ "type": "track", "uri": uri, "id": "", "is_local": true, "name": a.name, "duration_ms": a.duration_ms, "artists": artists, "album": { "name": album.clone().unwrap_or_default(), "images": [] } })
         }
-    }
-}
-
-impl Drop for Engine {
-    fn drop(&mut self) {
-        let _ = self.spirc.shutdown();
     }
 }
 

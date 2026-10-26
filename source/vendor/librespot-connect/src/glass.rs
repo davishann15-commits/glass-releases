@@ -1,5 +1,6 @@
 //! Glass: a hook on each song Connect starts, so the app can play the DJ's
-//! lines (`narration.*` in the song's metadata) around it.
+//! lines (`narration.*` in the song's metadata) around it; and one on what's
+//! next, for the app's queue (which it can reorder: `Spirc::glass_move_next`).
 
 use std::collections::HashMap;
 use std::sync::RwLock;
@@ -43,4 +44,22 @@ pub fn set_track_hook(hook: Hook) {
 
 pub(crate) fn track_start(t: &TrackStart) -> bool {
     HOOK.read().unwrap_or_else(|e| e.into_inner()).as_ref().is_some_and(|h| h(t))
+}
+
+/// Glass: what's next on a device: each song's URI and whether the user queued it.
+/// The `usize` is the device's `Spirc::glass_id`, so a hook can ignore an older
+/// device's last reports after a reconnect.
+pub type QueueHook = Box<dyn Fn(usize, Vec<(String, bool)>) + Send + Sync>;
+
+static QUEUE_HOOK: RwLock<Option<QueueHook>> = RwLock::new(None);
+
+/// Sets the queue hook, replacing any earlier one. It's called with each state update.
+pub fn set_queue_hook(hook: QueueHook) {
+    *QUEUE_HOOK.write().unwrap_or_else(|e| e.into_inner()) = Some(hook);
+}
+
+pub(crate) fn queue_changed(id: usize, upcoming: Vec<(String, bool)>) {
+    if let Some(h) = QUEUE_HOOK.read().unwrap_or_else(|e| e.into_inner()).as_ref() {
+        h(id, upcoming);
+    }
 }

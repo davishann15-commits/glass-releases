@@ -134,4 +134,3 @@ pub fn index(all: &[LocalTrack]) -> Index {
     let songs = albums.iter().flat_map(|a| a.tracks.iter().copied()).collect();
     Index { albums, artists, genres, songs }
 }
-

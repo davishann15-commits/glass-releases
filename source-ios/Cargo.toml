@@ -1,6 +1,6 @@
 [package]
 name = "glass"
-version = "1.0.0-beta.22"
+version = "1.0.0-beta.23"
 edition = "2024"
 description = "A Spotify player with synced lyrics, translation and a visualizer (librespot + egui)"
 license = "MIT"
@@ -70,6 +70,11 @@ autotools = "0.2.6"
 # Linux: windows through X11 or Wayland, whichever the session runs.
 [target.'cfg(target_os = "linux")'.dependencies]
 eframe = { version = "0.36", default-features = false, features = ["x11", "wayland"] }
+# Blur behind the window (ext-background-effect-v1), on winit's own connection.
+raw-window-handle = "0.6"
+wayland-backend = { version = "0.3", features = ["client_system"] }
+wayland-client = "0.31"
+wayland-protocols = { version = "0.32", features = ["client", "staging"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 # Rust's allocator on macOS (see main.rs).

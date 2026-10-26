@@ -1841,7 +1841,7 @@ dependencies = [
 
 [[package]]
 name = "glass"
-version = "1.0.0-beta.22"
+version = "1.0.0-beta.23"
 dependencies = [
  "anyhow",
  "autotools",
@@ -2797,6 +2797,7 @@ dependencies = [
  "hyper-proxy2",
  "hyper-tls",
  "hyper-util",
+ "libc",
  "librespot-oauth",
  "librespot-protocol",
  "log",

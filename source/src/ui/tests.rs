@@ -3,7 +3,7 @@
 //! no real settings, theme file or account is touched.
 
 use super::root;
-use crate::app::{App, LibFilter, NpView, RightPanel, Route};
+use crate::app::{Action, App, LibFilter, NpView, RightPanel, Route};
 use crate::lyrics::service::{ProviderSetting, Status};
 use crate::lyrics::{Outcome, Timing};
 use eframe::egui::{self, Key, Modifiers, accesskit::Role, vec2};
@@ -601,17 +601,59 @@ fn local_files_tab_and_sending_to_your_other_devices() {
     h.state_mut().settings.local_view = crate::config::LocalView::Songs;
     h.state_mut().act(crate::app::Action::RescanLocal);
     settle_local(&mut h);
-    h.state_mut().share_peers = vec![crate::share::Peer { id: "p1".into(), name: "Arch Desktop".into(), addrs: vec![], port: 1 }];
+    let peer = |id: &str, name: &str, version| crate::share::Peer { id: id.into(), name: name.into(), addrs: vec![], port: 1, version };
+    h.state_mut().share_peers = vec![peer("p1", "Arch Desktop", crate::share::VERSION)];
+    h.state_mut().share_others = vec![peer("p2", "Davis's MacBook Air", 3)];
     h.run_steps(2);
-    assert!(h.query_by_label_contains("On this network: Arch Desktop").is_some(), "your other devices are listed");
+    assert!(h.query_by_label_contains("Davis's MacBook Air has an older Glass. Update Glass there").is_some(), "a device that can't share says why");
     h.get_by_role_and_label(Role::Button, "Plastic Love").click_secondary();
     h.run_steps(3);
     h.get_by_label("Send to ⏵").click();
     h.run_steps(3);
-    h.get_by_label("Arch Desktop").click();
+    assert!(h.query_by_label("Davis's MacBook Air").is_none(), "only devices that can take songs are offered");
+    // The menu's (the device's row in Local Files is the other).
+    h.get_all_by_label("Arch Desktop").last().unwrap().click();
     h.run_steps(3);
     // No live sharing in tests: the device is gone by the time it's asked.
     assert!(toasted(&h, "isn't on this network any more"), "the send went through to sharing");
+
+    // The device's own songs, on its page: pick and get them.
+    h.state_mut().share_peers = vec![peer("p1", "Arch Desktop", crate::share::VERSION)];
+    h.run_steps(2);
+    h.get_by_role_and_label(Role::Button, "Arch Desktop").click();
+    h.run_steps(3);
+    assert_eq!(h.state().route, Route::Device { id: "p1".into(), name: "Arch Desktop".into() });
+    assert!(h.query_by_label_contains("Asking it for its songs").is_some());
+    let here = h.state().local_tracks.as_ref().unwrap()[0].clone();
+    let song = |id: &str, title: &str, artist: &str, ms| crate::share::FileMeta {
+        id: id.into(),
+        name: format!("{title}.mp3"),
+        size: 3 << 20,
+        title: title.into(),
+        artist: artist.into(),
+        album: String::new(),
+        duration_ms: ms,
+    };
+    let mine = h.state().local_tracks.clone().unwrap();
+    h.state_mut().device.as_mut().unwrap().answered(
+        "p1",
+        Ok(vec![song("a", &here.title, &here.artist, here.duration_ms), song("b", "Tokyo Rose", "Mariya Takeuchi", 250_000), song("c", "Sparkle", "Tatsuro Yamashita", 435_000)]),
+        &mine,
+    );
+    h.run_steps(3);
+    assert!(h.query_by_label_contains("3 songs · 2 songs not on this computer").is_some(), "{:?}", h.state().device.as_ref().map(|d| d.here.clone()));
+    assert!(h.query_by_label_contains("on this computer").is_some(), "a song that's here is marked");
+    h.get_by_label("Tokyo Rose").click();
+    h.run_steps(2);
+    assert!(h.state().device_picks.contains("b"));
+    assert!(h.query_by_label_contains("1 song picked · 3.0 MB").is_some());
+    h.get_by_label("pick all").click();
+    h.run_steps(2);
+    assert_eq!(h.state().device_picks.len(), 2, "all that aren't here");
+    h.get_by_role_and_label(Role::Button, "get 2 songs").click();
+    h.run_steps(3);
+    // Sharing doesn't run in tests: the request stops there.
+    assert!(toasted(&h, "Turn on sharing"), "the get went through to sharing");
 }
 
 #[test]
@@ -1667,4 +1709,26 @@ fn every_page_lays_out_at_any_zoom() {
         }
     }
     assert!(bad.is_empty(), "these panicked (see above): {bad:#?}");
+}
+
+#[test]
+fn a_free_account_browses_and_hears_why_spotify_songs_dont_play() {
+    let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let mut h = harness(vec2(1280.0, 820.0), |app| {
+        if let Some(me) = app.me.as_mut() {
+            me["product"] = "free".into();
+        }
+    });
+    click(&mut h, "Sunday Morning");
+    click(&mut h, "play");
+    assert!(toasted(&h, "Playing songs from Spotify needs Spotify Premium"), "a free account isn't sent to a player Spotify won't stream to");
+    assert!(!toasted(&h, "Starting playback"), "nor left waiting for one");
+
+    h.state_mut().toasts.clear();
+    h.state_mut().act(Action::Download { uri: "spotify:playlist:p2".into(), name: "Sunday Morning".into() });
+    h.run_steps(2);
+    assert!(toasted(&h, "Download as M4A or MP3"), "offline downloads need Premium; saving a copy doesn't");
+
+    click(&mut h, "Home");
+    assert_eq!(h.state().route, Route::Home, "browsing works as for anyone");
 }

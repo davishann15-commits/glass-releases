@@ -217,7 +217,6 @@ files in the music folder that the library doesn't list (ByeTunes' garbage colle
 ## Known differences that are by design
 
 - **LAME on iOS**: linked statically into the app (the desktop ships it as a separate,
-  replaceable dylib to meet the LGPL's relinking requirement). A distributed iOS build
-  would need LAME as an embedded dynamic framework, or the object files offered for
-  relinking, before it could be shared. Personal builds aren't affected.
+  replaceable dylib to meet the LGPL's relinking requirement). The shared iOS build is
+  published with its complete source (glass-releases/source-ios), which meets it instead.
 - **Window-level glass**: iOS apps can't blur other apps; the depth is drawn in the app.

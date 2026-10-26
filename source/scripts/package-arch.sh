@@ -14,10 +14,7 @@ mkdir -p "$OUT"
 if git rev-parse --verify -q HEAD >/dev/null 2>&1; then
   # From a git checkout: exactly the committed source.
   [ -z "$(git status --porcelain)" ] || echo "Note: uncommitted changes aren't in the package (it's built from the last commit)." >&2
-  TREE=HEAD
-  PREFIX=$(git rev-parse --show-prefix)
-  [ -z "$PREFIX" ] || TREE="HEAD:${PREFIX%/}"
-  git -C "$(git rev-parse --show-toplevel)" archive --format=tar.gz --prefix="glass-$PKGVER/" -o "$PWD/$OUT/glass-$PKGVER.tar.gz" "$TREE"
+  git archive --format=tar.gz --prefix="glass-$PKGVER/" -o "$OUT/glass-$PKGVER.tar.gz" HEAD
 else
   # Otherwise the working tree, without builds, packages, local tooling or the LAME
   # source (Arch builds against its lame package; see .gitattributes).

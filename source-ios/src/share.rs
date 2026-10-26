@@ -45,7 +45,7 @@ const NOISE: &str = "Noise_XX_25519_ChaChaPoly_BLAKE2s";
 /// 2: pairing, and the salted account tag. 3: a random value from each side
 /// in the pairing code. 4: no pairing; the account secret proves it; `List`
 /// and `Get`.
-const VERSION: u32 = 4;
+pub const VERSION: u32 = 4;
 /// Plaintext per encrypted message (Noise messages are at most 64 KiB).
 const CHUNK: usize = 60 * 1024;
 const MAX_FILE: u64 = 4 << 30;
@@ -61,6 +61,25 @@ pub struct Peer {
     pub name: String,
     pub addrs: Vec<IpAddr>,
     pub port: u16,
+    /// The sharing protocol it speaks. Only this one's (`VERSION`) can share; a
+    /// Glass that's older or newer is listed to say which one needs updating.
+    pub version: u32,
+}
+
+impl Peer {
+    /// It speaks this Glass's protocol: songs can go both ways.
+    pub fn ready(&self) -> bool {
+        self.version == VERSION
+    }
+
+    /// Why it can't share, when it can't: which Glass needs updating.
+    pub fn update_note(&self) -> Option<String> {
+        match self.version.cmp(&VERSION) {
+            std::cmp::Ordering::Equal => None,
+            std::cmp::Ordering::Less => Some(format!("{} has an older Glass. Update Glass there to share with it.", self.name)),
+            std::cmp::Ordering::Greater => Some(format!("{} has a newer Glass. Update Glass here to share with it.", self.name)),
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -94,11 +113,61 @@ pub enum Event {
         paths: Vec<PathBuf>,
     },
     /// Another device's Local Files (the answer to `Share::browse`).
-    #[cfg_attr(not(glass_mobile), allow(dead_code))]
     Library {
         peer: String,
         songs: Result<Vec<FileMeta>, String>,
     },
+    /// iOS: the user hasn't allowed Glass on the local network, so it can't look
+    /// for other devices.
+    #[cfg_attr(not(glass_mobile), allow(dead_code))]
+    NoLocalNetwork,
+}
+
+/// Another device's Local Files, being looked at to get some of its songs.
+pub struct Browsed {
+    /// Its `Peer::id`.
+    pub peer: String,
+    pub name: String,
+    /// `None` while they're asked for; the error in plain words.
+    pub songs: Option<Result<Vec<FileMeta>, String>>,
+    /// Which of them are here already (not fetched again), by index.
+    pub here: Vec<bool>,
+}
+
+impl Browsed {
+    pub fn new(peer: &Peer) -> Self {
+        Self { peer: peer.id.clone(), name: peer.name.clone(), songs: None, here: Vec::new() }
+    }
+
+    /// Takes `Event::Library`'s answer (if it's this device's).
+    pub fn answered(&mut self, peer: &str, songs: Result<Vec<FileMeta>, String>, mine: &[LocalTrack]) {
+        if peer != self.peer {
+            return;
+        }
+        self.songs = Some(songs.map_err(|_| format!("Couldn't see the songs on {}. Check that Glass is open on it and that it's on the same Wi-Fi.", self.name)));
+        self.mark_here(mine);
+    }
+
+    /// Marks which of its songs this device has (after a list arrives, and as songs
+    /// arrive here). By title first: there can be thousands on each side.
+    pub fn mark_here(&mut self, mine: &[LocalTrack]) {
+        let Some(Ok(songs)) = &self.songs else { return };
+        let norm = crate::lyrics::matching::normalize;
+        let mut by_title: HashMap<String, Vec<LocalTrack>> = HashMap::new();
+        for t in mine {
+            by_title.entry(norm(&t.title)).or_default().push(t.clone());
+        }
+        self.here = songs.iter().map(|f| by_title.get(&norm(&f.title)).is_some_and(|same| local::find(same, &f.spotify_uri()).is_some())).collect();
+    }
+
+    /// The listed songs (with whether each is here), once they've come.
+    pub fn list(&self) -> impl Iterator<Item = (&FileMeta, bool)> {
+        let songs = match &self.songs {
+            Some(Ok(s)) => s.as_slice(),
+            _ => &[],
+        };
+        songs.iter().enumerate().map(|(i, f)| (f, self.here.get(i).copied().unwrap_or(false)))
+    }
 }
 
 /// Who this Glass is.
@@ -111,6 +180,9 @@ pub struct Me {
     /// What only the account's devices know (`account_secret`). Never sent: only
     /// tags and proofs made with it.
     pub account: String,
+    /// The account's username: Glass before protocol 4 tagged its announcement with
+    /// it (recognised only to say that Glass needs updating).
+    pub username: String,
 }
 
 /// What a connection needs to know.
@@ -129,6 +201,16 @@ struct Ctx {
     next_id: Arc<AtomicU64>,
     /// Connections and transfers under way, stopped when sharing is turned off.
     running: Arc<Mutex<Vec<tokio::task::AbortHandle>>>,
+    /// The devices found, and which of them answer.
+    peers: Arc<Mutex<Found>>,
+}
+
+/// The devices announced on the network, by announcement ID, and the ones that
+/// answered when last asked (only those are listed).
+#[derive(Default)]
+struct Found {
+    all: HashMap<String, Peer>,
+    answering: HashSet<String>,
 }
 
 impl Ctx {
@@ -137,6 +219,66 @@ impl Ctx {
         let mut running = self.running.lock().unwrap_or_else(|e| e.into_inner());
         running.retain(|t| !t.is_finished());
         running.push(task.abort_handle());
+    }
+
+    /// Tells the app the devices listed now.
+    fn peers_changed(&self) {
+        let mut list: Vec<Peer> = {
+            let f = self.peers.lock().unwrap();
+            f.all.values().filter(|p| f.answering.contains(&p.id)).cloned().collect()
+        };
+        list.sort_by(|a, b| a.name.cmp(&b.name).then(a.id.cmp(&b.id)));
+        (self.on_event)(Event::Peers(list));
+    }
+
+    /// A device announced (or announced again): listed once it answers. A Glass that
+    /// quit without saying so (killed, crashed, its computer asleep) leaves its
+    /// announcement behind for a while, and isn't listed.
+    fn found(&self, peer: Peer) {
+        if self.peers.lock().unwrap().all.insert(peer.id.clone(), peer.clone()).as_ref() == Some(&peer) {
+            return;
+        }
+        let ctx = self.clone();
+        self.track(tokio::spawn(async move { ctx.check(peer).await }));
+    }
+
+    /// Lists `peer` if it answers, and takes it off the list if it doesn't.
+    async fn check(&self, peer: Peer) {
+        let up = answers(&peer).await;
+        let changed = {
+            let mut f = self.peers.lock().unwrap();
+            if !f.all.contains_key(&peer.id) {
+                return;
+            }
+            if up { f.answering.insert(peer.id.clone()) } else { f.answering.remove(&peer.id) }
+        };
+        if changed {
+            if !up {
+                log::info!("local files sharing: {} ({}) doesn't answer", peer.name, peer.id);
+            }
+            self.peers_changed();
+        }
+    }
+
+    /// Asks every device found again: one that stopped answering leaves the list, one
+    /// that answers again comes back.
+    async fn recheck(&self) {
+        let all: Vec<Peer> = self.peers.lock().unwrap().all.values().cloned().collect();
+        for p in all {
+            self.check(p).await;
+        }
+    }
+
+    /// A device's announcement is gone.
+    fn gone(&self, id: &str) {
+        let listed = {
+            let mut f = self.peers.lock().unwrap();
+            f.all.remove(id);
+            f.answering.remove(id)
+        };
+        if listed {
+            self.peers_changed();
+        }
     }
 }
 
@@ -168,6 +310,48 @@ pub fn account_tag(secret: &str, salt: &str) -> String {
 /// Whether `tag` was made for this account.
 fn same_account(secret: &str, tag: &str) -> bool {
     tag.split_once('.').is_some_and(|(salt, _)| !salt.is_empty() && salt.len() <= 64 && account_tag(secret, salt) == tag)
+}
+
+/// The protocol of an announcement (its `v` and `acct`) from a Glass signed in to
+/// this account, or `None` for another account's (or a broken one). Protocols 2
+/// and 3 keyed the tag with the username alone.
+fn announced(me: &Me, v: Option<&str>, tag: Option<&str>) -> Option<u32> {
+    let (v, tag) = (v?.parse::<u32>().ok()?, tag?);
+    let key = if v < 4 { &me.username } else { &me.account };
+    (v >= 2 && !key.is_empty() && same_account(key, tag)).then_some(v)
+}
+
+/// A device's addresses in the order to try them: its network addresses (IPv4
+/// first), then link-local ones, loopback last (that's only ever this device itself,
+/// when it's on the same computer).
+fn by_reach(mut addrs: Vec<IpAddr>) -> Vec<IpAddr> {
+    let rank = |a: &IpAddr| match a {
+        IpAddr::V4(v) if v.is_loopback() => 4,
+        IpAddr::V6(v) if v.is_loopback() => 5,
+        IpAddr::V4(v) if v.is_link_local() => 2,
+        IpAddr::V4(_) => 0,
+        IpAddr::V6(v) if v.is_unicast_link_local() => 3,
+        IpAddr::V6(_) => 1,
+    };
+    addrs.sort_by_key(|a| (rank(a), *a));
+    addrs.dedup();
+    addrs
+}
+
+/// Whether anything takes a connection at `peer`'s addresses (tried at once, for a
+/// few seconds).
+async fn answers(peer: &Peer) -> bool {
+    let mut tries = tokio::task::JoinSet::new();
+    for a in peer.addrs.iter().copied() {
+        let port = peer.port;
+        tries.spawn(async move { matches!(tokio::time::timeout(Duration::from_secs(3), TcpStream::connect(SocketAddr::new(a, port))).await, Ok(Ok(_))) });
+    }
+    while let Some(r) = tries.join_next().await {
+        if r.unwrap_or(false) {
+            return true;
+        }
+    }
+    false
 }
 
 /// This device's name ("Davis's MacBook Pro"), for other devices to show.
@@ -647,9 +831,7 @@ fn finish(ctx: &Ctx, mut t: Transfer, peer: &str, saved: Vec<PathBuf>, r: Result
 
 async fn dial(peer: &Peer) -> Result<TcpStream> {
     let mut last = anyhow!("{} isn't reachable", peer.name);
-    let mut addrs: Vec<IpAddr> = peer.addrs.clone();
-    addrs.sort_by_key(|a| !a.is_ipv4());
-    for a in addrs {
+    for a in by_reach(peer.addrs.clone()) {
         match tokio::time::timeout(Duration::from_secs(5), TcpStream::connect(SocketAddr::new(a, peer.port))).await {
             Ok(Ok(s)) => {
                 // Small messages go out at once (no waiting to batch them).
@@ -686,7 +868,6 @@ async fn want_from(ctx: &Ctx, peer: &Peer, uris: Vec<String>) -> Result<Vec<Path
 }
 
 /// Gets the songs with these `FileMeta::id`s from `peer`; returns those saved.
-#[cfg_attr(not(glass_mobile), allow(dead_code))]
 async fn get_from(ctx: &Ctx, peer: &Peer, ids: Vec<String>) -> Result<Vec<PathBuf>> {
     request(ctx, peer, Msg::Get(ids)).await
 }
@@ -706,7 +887,6 @@ async fn request(ctx: &Ctx, peer: &Peer, ask: Msg) -> Result<Vec<PathBuf>> {
 }
 
 /// `peer`'s Local Files.
-#[cfg_attr(not(glass_mobile), allow(dead_code))]
 async fn list_from(ctx: &Ctx, peer: &Peer) -> Result<Vec<FileMeta>> {
     let (mut c, _) = connect(dial(peer).await?, ctx, true).await?;
     c.send_json(&Msg::List).await?;
@@ -722,7 +902,6 @@ async fn list_from(ctx: &Ctx, peer: &Peer) -> Result<Vec<FileMeta>> {
 /// their transfers. Stops when dropped.
 pub struct Share {
     ctx: Ctx,
-    peers: Arc<Mutex<HashMap<String, Peer>>>,
     #[cfg(not(glass_mobile))]
     mdns: Option<mdns_sd::ServiceDaemon>,
     /// iOS: Bonjour through the system's DNS-SD (see ios/core/src/bonjour.rs).
@@ -741,7 +920,7 @@ impl Share {
             let _ = std::fs::remove_file(crate::config::config_dir().join(old));
         }
         let tag = account_tag(&me.account, &me.instance);
-        let ctx = Ctx { me, tag, key, library, inbox, on_event: Arc::new(on_event), next_id: Arc::default(), running: Arc::default() };
+        let ctx = Ctx { me, tag, key, library, inbox, on_event: Arc::new(on_event), next_id: Arc::default(), running: Arc::default(), peers: Arc::default() };
         let std_listener = std::net::TcpListener::bind(("0.0.0.0", PORT)).or_else(|_| std::net::TcpListener::bind("0.0.0.0:0"))?;
         std_listener.set_nonblocking(true)?;
         let port = std_listener.local_addr()?.port();
@@ -775,37 +954,39 @@ impl Share {
                 }));
             }
         }));
-        let peers: Arc<Mutex<HashMap<String, Peer>>> = Arc::default();
-        let mdns = Self::announce(&rt, &ctx, port, &peers, &mut tasks).map_err(|e| log::warn!("local files sharing can't use the network: {e:#}")).ok();
-        Ok(Self { ctx, peers, mdns, tasks, rt })
+        let mdns = Self::announce(&rt, &ctx, port, &mut tasks).map_err(|e| log::warn!("local files sharing can't use the network: {e:#}")).ok();
+        let c = ctx.clone();
+        tasks.push(rt.spawn(async move {
+            loop {
+                tokio::time::sleep(Duration::from_secs(30)).await;
+                c.recheck().await;
+            }
+        }));
+        Ok(Self { ctx, mdns, tasks, rt })
     }
 
     /// iOS: the same announcement and the same peers, through DNS-SD.
     #[cfg(glass_mobile)]
-    fn announce(rt: &tokio::runtime::Handle, ctx: &Ctx, port: u16, peers: &Arc<Mutex<HashMap<String, Peer>>>, tasks: &mut Vec<tokio::task::JoinHandle<()>>) -> Result<crate::bonjour::Bonjour> {
+    fn announce(rt: &tokio::runtime::Handle, ctx: &Ctx, port: u16, tasks: &mut Vec<tokio::task::JoinHandle<()>>) -> Result<crate::bonjour::Bonjour> {
         let me = &ctx.me;
         let props = [("v", VERSION.to_string()), ("acct", ctx.tag.clone()), ("name", me.name.clone())];
         let (bonjour, mut events) = crate::bonjour::Bonjour::start(SERVICE.trim_end_matches(".local."), &me.instance, port, &props)?;
-        let (peers, ctx) = (peers.clone(), ctx.clone());
+        let ctx = ctx.clone();
         tasks.push(rt.spawn(async move {
             while let Some(ev) = events.recv().await {
-                let changed = match ev {
+                match ev {
                     crate::bonjour::Found::Service { instance, txt, port, addrs } => {
-                        let ours = txt.get("acct").is_some_and(|t| same_account(&ctx.me.account, t)) && txt.get("v").map(String::as_str) == Some(VERSION.to_string().as_str());
-                        if !ours || instance == ctx.me.instance || instance.is_empty() {
-                            false
-                        } else {
+                        // This account's (in any version: one that can't share is listed to say so).
+                        if let Some(version) = announced(&ctx.me, txt.get("v").map(String::as_str), txt.get("acct").map(String::as_str))
+                            && instance != ctx.me.instance
+                            && !instance.is_empty()
+                        {
                             let name = shown_name(txt.get("name").map(String::as_str).unwrap_or("Glass"));
-                            let peer = Peer { id: instance.clone(), name, addrs, port };
-                            peers.lock().unwrap().insert(instance, peer.clone()) != Some(peer)
+                            ctx.found(Peer { id: instance, name, addrs, port, version });
                         }
                     }
-                    crate::bonjour::Found::Gone { instance } => peers.lock().unwrap().remove(&instance).is_some(),
-                };
-                if changed {
-                    let mut list: Vec<Peer> = peers.lock().unwrap().values().cloned().collect();
-                    list.sort_by(|a, b| a.name.cmp(&b.name));
-                    (ctx.on_event)(Event::Peers(list));
+                    crate::bonjour::Found::Gone { instance } => ctx.gone(&instance),
+                    crate::bonjour::Found::Denied => (ctx.on_event)(Event::NoLocalNetwork),
                 }
             }
         }));
@@ -813,7 +994,7 @@ impl Share {
     }
 
     #[cfg(not(glass_mobile))]
-    fn announce(rt: &tokio::runtime::Handle, ctx: &Ctx, port: u16, peers: &Arc<Mutex<HashMap<String, Peer>>>, tasks: &mut Vec<tokio::task::JoinHandle<()>>) -> Result<mdns_sd::ServiceDaemon> {
+    fn announce(rt: &tokio::runtime::Handle, ctx: &Ctx, port: u16, tasks: &mut Vec<tokio::task::JoinHandle<()>>) -> Result<mdns_sd::ServiceDaemon> {
         let mdns = mdns_sd::ServiceDaemon::new()?;
         // Networks don't come and go every few seconds (the default check).
         let _ = mdns.set_ip_check_interval(30);
@@ -822,39 +1003,37 @@ impl Share {
         let info = mdns_sd::ServiceInfo::new(SERVICE, &me.instance, &format!("glass-{}.local.", me.instance), (), port, &props[..])?.enable_addr_auto();
         mdns.register(info)?;
         let events = mdns.browse(SERVICE)?;
-        let (peers, ctx) = (peers.clone(), ctx.clone());
+        let ctx = ctx.clone();
         tasks.push(rt.spawn(async move {
             while let Ok(ev) = events.recv_async().await {
-                let changed = match ev {
+                match ev {
                     mdns_sd::ServiceEvent::ServiceResolved(info) => {
-                        // This account's, and a Glass that speaks this version (an older one would only fail).
-                        let ours = info.get_property_val_str("acct").is_some_and(|t| same_account(&ctx.me.account, t)) && info.get_property_val_str("v") == Some(VERSION.to_string().as_str());
+                        // This account's (in any version: one that can't share is listed to say so).
                         let id = info.get_fullname().split('.').next().unwrap_or("").to_string();
-                        if !ours || id == ctx.me.instance || id.is_empty() {
-                            false
-                        } else {
+                        if let Some(version) = announced(&ctx.me, info.get_property_val_str("v"), info.get_property_val_str("acct"))
+                            && id != ctx.me.instance
+                            && !id.is_empty()
+                        {
                             let name = shown_name(info.get_property_val_str("name").unwrap_or("Glass"));
                             let mut addrs: Vec<IpAddr> = info.get_addresses().iter().cloned().collect();
                             addrs.sort();
-                            let peer = Peer { id: id.clone(), name, addrs, port: info.get_port() };
-                            peers.lock().unwrap().insert(id, peer.clone()) != Some(peer)
+                            ctx.found(Peer { id, name, addrs, port: info.get_port(), version });
                         }
                     }
-                    mdns_sd::ServiceEvent::ServiceRemoved(_, fullname) => peers.lock().unwrap().remove(fullname.split('.').next().unwrap_or("")).is_some(),
-                    _ => false,
-                };
-                if changed {
-                    let mut list: Vec<Peer> = peers.lock().unwrap().values().cloned().collect();
-                    list.sort_by(|a, b| a.name.cmp(&b.name));
-                    (ctx.on_event)(Event::Peers(list));
+                    mdns_sd::ServiceEvent::ServiceRemoved(_, fullname) => ctx.gone(fullname.split('.').next().unwrap_or("")),
+                    _ => {}
                 }
             }
         }));
         Ok(mdns)
     }
 
+    /// The devices songs can go to and from now (the ones that speak this protocol).
     pub fn peers(&self) -> Vec<Peer> {
-        let mut list: Vec<Peer> = self.peers.lock().unwrap().values().cloned().collect();
+        let mut list: Vec<Peer> = {
+            let f = self.ctx.peers.lock().unwrap();
+            f.all.values().filter(|p| p.ready() && f.answering.contains(&p.id)).cloned().collect()
+        };
         list.sort_by(|a, b| a.name.cmp(&b.name));
         list
     }
@@ -893,7 +1072,6 @@ impl Share {
         }));
     }
     /// Asks `peer` for its Local Files (the answer comes as `Event::Library`).
-    #[cfg_attr(not(glass_mobile), allow(dead_code))]
     pub fn browse(&self, peer: Peer) {
         let ctx = self.ctx.clone();
         self.ctx.track(self.rt.spawn(async move {
@@ -906,7 +1084,6 @@ impl Share {
     }
 
     /// Gets the songs with these `FileMeta::id`s from `peer` (in the background).
-    #[cfg_attr(not(glass_mobile), allow(dead_code))]
     pub fn get(&self, peer: Peer, ids: Vec<String>) {
         let ctx = self.ctx.clone();
         self.ctx.track(self.rt.spawn(async move {
@@ -942,7 +1119,7 @@ mod tests {
     use super::*;
 
     fn me(device: &str, account: &str) -> Me {
-        Me { instance: format!("i-{device}"), name: format!("Mac {device}"), account: account_secret(account, &format!("{account}@example.com")) }
+        Me { instance: format!("i-{device}"), name: format!("Mac {device}"), account: account_secret(account, &format!("{account}@example.com")), username: account.into() }
     }
 
     /// A device signed in to `account`.
@@ -960,6 +1137,7 @@ mod tests {
             on_event: Arc::new(move |e| ev.lock().unwrap().push(e)),
             next_id: Arc::default(),
             running: Arc::default(),
+            peers: Arc::default(),
         };
         (c, events)
     }
@@ -994,7 +1172,7 @@ mod tests {
                 });
             }
         });
-        Peer { id: "b".into(), name: "Mac B".into(), addrs: vec!["127.0.0.1".parse().unwrap()], port }
+        Peer { id: "b".into(), name: "Mac B".into(), addrs: vec!["127.0.0.1".parse().unwrap()], port, version: VERSION }
     }
 
     fn tmp(name: &str) -> PathBuf {
@@ -1119,10 +1297,11 @@ mod tests {
         let sp = crate::sp::Sp::connect_cached(creds).await.unwrap();
         tokio::time::sleep(Duration::from_secs(2)).await;
         let me_json = sp.handle(&http::Method::GET, "/me", None, None).await.unwrap();
-        let account = account_secret(me_json["id"].as_str().unwrap(), me_json["email"].as_str().unwrap_or(""));
+        let username = me_json["id"].as_str().unwrap().to_string();
+        let account = account_secret(&username, me_json["email"].as_str().unwrap_or(""));
         let (tx, rx) = std::sync::mpsc::channel();
         let inbox = tmp("live-inbox");
-        let who = Me { instance: "livetest0000".into(), name: "Sharing test".into(), account };
+        let who = Me { instance: "livetest0000".into(), name: "Sharing test".into(), account, username };
         let share = Share::start(tokio::runtime::Handle::current(), who, Arc::default(), inbox.clone(), move |e| {
             let _ = tx.send(e);
         })
@@ -1150,6 +1329,115 @@ mod tests {
             unsafe { std::env::set_var("HOME", h) };
         }
         let _ = std::fs::remove_dir_all(home);
+        let _ = std::fs::remove_dir_all(inbox);
+    }
+
+    #[test]
+    fn glass_of_this_account_in_another_version_is_recognised_to_say_so() {
+        let me = me("a", "davis");
+        let ours = |v: &str, key: &str| announced(&me, Some(v), Some(&account_tag(key, "run1")));
+        assert_eq!(ours("4", &me.account), Some(4));
+        // Released 1.0.0-beta.22 (protocol 3) keys its tag with the username alone.
+        assert_eq!(ours("3", "davis"), Some(3));
+        assert_eq!(ours("3", &me.account), None);
+        assert_eq!(ours("5", &me.account), Some(5), "a newer Glass, if it keeps the tag");
+        assert_eq!(ours("3", "someone-else"), None);
+        assert_eq!(ours("4", &account_secret("someone-else", "x@example.com")), None);
+        assert_eq!(announced(&me, Some("four"), Some("run1.00")), None);
+        assert_eq!(announced(&me, None, Some(&account_tag(&me.account, "run1"))), None);
+
+        let peer = |version| Peer { id: "p".into(), name: "Davis's MacBook".into(), addrs: vec![], port: 1, version };
+        assert!(peer(VERSION).ready() && peer(VERSION).update_note().is_none());
+        assert!(!peer(3).ready());
+        assert_eq!(peer(3).update_note().unwrap(), "Davis's MacBook has an older Glass. Update Glass there to share with it.");
+        assert!(peer(VERSION + 1).update_note().unwrap().contains("Update Glass here"));
+    }
+
+    #[tokio::test]
+    async fn only_devices_that_answer_are_listed() {
+        let (c, events) = ctx("a", "davis", vec![], tmp("answer"));
+        let live = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let live_port = live.local_addr().unwrap().port();
+        let dead_port = TcpListener::bind("127.0.0.1:0").await.unwrap().local_addr().unwrap().port();
+        let peer = |id: &str, port| Peer { id: id.into(), name: "Davis's MacBook Pro".into(), addrs: vec!["127.0.0.1".parse().unwrap()], port, version: VERSION };
+        let listed = || events.lock().unwrap().iter().rev().find_map(|e| if let Event::Peers(p) = e { Some(p.iter().map(|p| p.id.clone()).collect::<Vec<_>>()) } else { None });
+        // Glass on the Mac restarted: its old announcement lingers, a new one comes.
+        c.found(peer("old", dead_port));
+        c.found(peer("new", live_port));
+        let t0 = Instant::now();
+        while listed().is_none() && t0.elapsed() < Duration::from_secs(5) {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        c.recheck().await;
+        assert_eq!(listed(), Some(vec!["new".to_string()]), "the one that doesn't answer isn't listed");
+        // It quits without a word: off the list at the next check.
+        drop(live);
+        c.recheck().await;
+        assert_eq!(listed(), Some(vec![]));
+        // Back (on the same port): listed again.
+        let _again = TcpListener::bind(("127.0.0.1", live_port)).await.unwrap();
+        c.recheck().await;
+        assert_eq!(listed(), Some(vec!["new".to_string()]));
+        c.gone("new");
+        assert_eq!(listed(), Some(vec![]));
+        let _ = std::fs::remove_dir_all(tmp("answer"));
+    }
+
+    #[test]
+    fn addresses_are_tried_network_first_loopback_last() {
+        let a: Vec<IpAddr> = ["::1", "fe80::1", "127.0.0.1", "169.254.24.119", "fd00::5", "192.168.1.20", "10.0.0.7"].iter().map(|s| s.parse().unwrap()).collect();
+        let order: Vec<String> = by_reach(a).iter().map(|a| a.to_string()).collect();
+        assert_eq!(order, ["10.0.0.7", "192.168.1.20", "fd00::5", "169.254.24.119", "fe80::1", "127.0.0.1", "::1"]);
+    }
+
+    #[test]
+    fn a_browsed_device_marks_the_songs_already_here() {
+        let peer = Peer { id: "p".into(), name: "Davis's iPhone".into(), addrs: vec![], port: 1, version: VERSION };
+        let mut b = Browsed::new(&peer);
+        let f = |id: &str, title: &str| FileMeta { id: id.into(), name: format!("{title}.mp3"), size: 10, title: title.into(), artist: "Anri".into(), album: "Timely!!".into(), duration_ms: 250_000 };
+        let mine = vec![LocalTrack { path: "/m/Windy Summer.flac".into(), title: "Windy Summer".into(), artist: "Anri".into(), album: "Timely!!".into(), duration_ms: 250_000, ..Default::default() }];
+        b.answered("someone else", Ok(vec![f("1", "Windy Summer")]), &mine);
+        assert!(b.songs.is_none(), "another device's answer");
+        b.answered("p", Ok(vec![f("1", "Windy Summer"), f("2", "Remember Summer Days")]), &mine);
+        assert_eq!(b.list().map(|(f, here)| (f.id.as_str(), here)).collect::<Vec<_>>(), [("1", true), ("2", false)]);
+        b.answered("p", Err("timed out".into()), &mine);
+        let e = b.songs.as_ref().unwrap().as_ref().unwrap_err();
+        assert!(e.contains("Davis's iPhone") && !e.contains("timed out"), "{e}");
+    }
+
+    /// The computer's side of ios/scripts/live-share.sh: signed in as the demo account
+    /// (as `GLASS_DEMO_SHARE` runs), it finds the iPhone app in the simulator (open with
+    /// `-demo -demoShare`), lists its songs, gets "Phone Song" and sends it the song at
+    /// `GLASS_LIVE_SONG`: connections made to the iPhone, over the network.
+    #[tokio::test(flavor = "multi_thread")]
+    #[ignore]
+    async fn live_demo_computer() {
+        let mine = PathBuf::from(std::env::var_os("GLASS_LIVE_SONG").expect("GLASS_LIVE_SONG: a song to send"));
+        let track = local::read_paths(std::slice::from_ref(&mine)).pop().expect("the song to send");
+        let inbox = tmp("live-demo-inbox");
+        let (tx, rx) = std::sync::mpsc::channel();
+        let who = Me { instance: "livedemo0000".into(), name: "Live test computer".into(), account: account_secret("me", "you@example.com"), username: "me".into() };
+        let share = Share::start(tokio::runtime::Handle::current(), who, Arc::new(RwLock::new(Arc::new(vec![track.clone()]))), inbox.clone(), move |e| {
+            let _ = tx.send(e);
+        })
+        .unwrap();
+        let t0 = Instant::now();
+        while share.peers().is_empty() && t0.elapsed() < Duration::from_secs(30) {
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+        let phone = share.peers().first().cloned().expect("the iPhone app is found on the network");
+        println!("found {} ({:?}, port {})", phone.name, phone.addrs, phone.port);
+        let listed = list_from(&share.ctx, &phone).await.unwrap_or_else(|e| panic!("listing {}: {e:#}", phone.name));
+        println!("{} lists {} songs", phone.name, listed.len());
+        let want = listed.iter().find(|f| f.title == "Phone Song").expect("its Phone Song is listed");
+        let got = get_from(&share.ctx, &phone, vec![want.id.clone()]).await.unwrap_or_else(|e| panic!("getting from {}: {e:#}", phone.name));
+        assert_eq!(got.len(), 1);
+        assert_eq!(std::fs::metadata(&got[0]).unwrap().len(), want.size, "the song arrives whole");
+        send_to(share.ctx.clone(), phone.clone(), vec![track]).await.unwrap_or_else(|e| panic!("sending to {}: {e:#}", phone.name));
+        let sent = rx.try_iter().any(|e| matches!(e, Event::Transfer(t) if t.sending && t.state == State::Done && t.done == 1));
+        assert!(sent, "{} saved the song sent to it", phone.name);
+        println!("ok  got Phone Song from {} and sent it {}", phone.name, mine.display());
+        drop(share);
         let _ = std::fs::remove_dir_all(inbox);
     }
 

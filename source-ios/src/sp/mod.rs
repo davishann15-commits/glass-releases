@@ -169,7 +169,9 @@ pub(crate) async fn web_player_queries(http: &reqwest::Client) -> HashMap<String
     };
     let Some(page) = get("https://open.spotify.com/".into()).await else { return HashMap::new() };
     const BASE: &str = "https://open.spotifycdn.com/cdn/build/web-player/";
-    let Some(main) = page.match_indices(BASE).map(|(i, _)| &page[i..]).filter_map(|rest| rest.split('"').next()).find(|u| u.contains("/web-player.") && u.ends_with(".js")) else { return HashMap::new() };
+    let Some(main) = page.match_indices(BASE).map(|(i, _)| &page[i..]).filter_map(|rest| rest.split('"').next()).find(|u| u.contains("/web-player.") && u.ends_with(".js")) else {
+        return HashMap::new();
+    };
     let Some(js) = get(main.to_string()).await else { return HashMap::new() };
     let mut found = find_queries(&js);
     for (name, hash) in web_player_chunks(&js) {
@@ -1113,13 +1115,11 @@ mod tests {
 
     #[test]
     fn web_player_chunk_map() {
-        let js = r#"u.u=e=>""+(({1328:"xpui-pip-mini-player",4406:"xpui-routes-search",9908:"dwp-panel-section"})[e]||e)+"."+({1328:"38964775",4406:"0ab299ca",9908:"d73a3ce7"})[e]+".js",u.miniCssF=e=>"""#;
+        let js =
+            r#"u.u=e=>""+(({1328:"xpui-pip-mini-player",4406:"xpui-routes-search",9908:"dwp-panel-section"})[e]||e)+"."+({1328:"38964775",4406:"0ab299ca",9908:"d73a3ce7"})[e]+".js",u.miniCssF=e=>"""#;
         let mut chunks = web_player_chunks(js);
         chunks.sort();
-        assert_eq!(
-            chunks,
-            vec![("dwp-panel-section".into(), "d73a3ce7".into()), ("xpui-pip-mini-player".into(), "38964775".into()), ("xpui-routes-search".into(), "0ab299ca".into())]
-        );
+        assert_eq!(chunks, vec![("dwp-panel-section".into(), "d73a3ce7".into()), ("xpui-pip-mini-player".into(), "38964775".into()), ("xpui-routes-search".into(), "0ab299ca".into())]);
         assert!(web_player_chunks("no map here").is_empty());
     }
 

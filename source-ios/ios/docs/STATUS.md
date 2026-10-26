@@ -176,13 +176,59 @@ Running record of what's built and verified, newest last. The parity ledger
   (an earlier import had added it in that spelling), and Local Files' settings still held the
   Documents folders of three earlier installs (iOS moves the app's container on each install).
   Paths inside the app's Documents are now rebased to this run's folder, in one spelling, at
-  every launch (`paths::rebase`: Local Files' folders via `tidy_sources`, the save folder, local
-  playlists via `Playlists::map_paths`, and imported files). Seen on the device's own files.
+  launch (`paths::relocate`: Local Files' folders, the save folder, local playlists via
+  `Playlists::map_paths`; imported files as they come). Seen on the device's own files.
 - Add to Apple Music put Apple Music's copy of a song in the playlist instead of the file: any
   library song with the same title, artist and album counted as "already there". Only songs Glass
   (or ByeTunes, or a sync) put in the music folder count now: Apple Music's (no file, a real store
   ID, or a subscription song; Glass's own carry placeholder IDs from 9 000 000 000) don't, so the
   file goes in beside it, and in a playlist the file takes the copy's place, in order.
+- Adding a folder from Files: a folder in another app's space (On My iPhone › that app) was taken
+  for an earlier install's Documents by that rebase and folded into Glass's own, so its songs never
+  showed; folders in iCloud Drive showed none of the songs that weren't downloaded yet (iCloud
+  keeps them in the cloud until opened). Picked folders are now opened before the core starts
+  (`PickedFolders`: bookmark plus last path, so a folder that moved takes its playlists' songs
+  along) and handed over in `CoreConfig.picked_folders`; only paths outside them are rebased, once,
+  at launch. Songs not on the iPhone yet are downloaded (`CloudSongs`, "Downloading N songs to this
+  iPhone…" in Local Files) and the scan skips them until they're here (`SF_DATALESS`). Removing a
+  folder in Settings forgets it (it came back at the next launch); a folder whose bookmark is lost
+  stops being a source, and a lost save folder goes back to Glass's own. "Add a folder" and "import
+  songs" share one Files picker. Sources read as Files names them ("iCloud Drive › Music", "On My
+  iPhone"). `LocalFoldersUITests` picks a folder through the real Files picker. Core 229 pass
+  (new `picked_folders_keep_their_place`); the full UI suite (19 tests) passes; desktop
+  `cargo check` clean. iCloud and another app's folder need the device (VALIDATION item 9).
+- A Spotify Free account closed Glass about 20 s after every launch (Mac, and the iPhone the
+  same way), so it couldn't even be logged out: librespot-core's `check_catalogue` calls
+  `exit(1)` for any account that isn't Premium, from both of Glass's sessions (data and
+  playback). The vendored librespot-core logs it instead (`vendor/librespot-core/GLASS.md`).
+  The playback engine now starts once `/me` says the account is Premium (`account_known`; if
+  `/me` fails it starts as before and is let go if the account turns out free). A free
+  account browses, plays Local Files and saves songs (Share ▸ Download as); Spotify songs,
+  radio and offline downloads say they need Premium instead of waiting for a player Spotify
+  won't stream to. Desktop Log out also deletes librespot's `credentials.json`. Seen on the
+  user's own free-account session (copied to a scratch HOME): beta.22 exited at ~20 s, the
+  fixed build kept running and answered Play with the Premium note. Tests: desktop
+  `a_free_account_browses_and_hears_why_spotify_songs_dont_play` (268 desktop tests pass),
+  iOS `PolishUITests.testFreeAccountBrowses` (`-demoFree`).
+- Sharing between devices didn't work, for three reasons, all fixed and checked over the
+  network (the simulator against the desktop app, both directions, `scripts/live-share.sh`):
+  the released Mac app (1.0.0-beta.22, protocol 3, pairing codes) and the iPhone (protocol 4)
+  ignore each other, and nothing said so: a Glass of the account that speaks another protocol
+  is now listed with which one needs updating (protocol 3's tag is keyed with the username,
+  so it's recognised). The iPhone resolved a device only on the network interface it was
+  first seen on; when that was one its addresses never come from (on this Mac, a virtual
+  interface listed before Wi-Fi once the record was cached), it was never listed: it's now
+  resolved on any interface, and losing it on one interface no longer drops it. And a Glass
+  that quit without a goodbye (killed, crashed, asleep) stayed listed under the same name as
+  the live one for up to 75 minutes: devices are now listed only once they take a
+  connection, and checked again every 30 s. Also: the Mac can browse another device's songs
+  and get the ones picked (Local Files ▸ the device, `Route::Device`), the iPhone says when
+  nothing's found yet or local-network access is refused (`Found::Denied`), and addresses
+  are tried network first, loopback last. New demo hooks: iOS `-demoShare` and desktop
+  `GLASS_DEMO_SHARE=<folder>` run real sharing as the demo account (only demos have it).
+  Tests: desktop 272 pass (`only_devices_that_answer_are_listed`, versions, browsing, the
+  device page), core 233 pass, `SharingLiveUITests` + `share::tests::live_demo_computer`
+  pass twice in a row.
 - Tests: core 224 pass (new `errors`, `share` list/get and account tests); desktop
   `cargo check --all-targets` clean; UI tests `PolishUITests` (playlist pane, swipe right,
   browse a device and get songs) and the rest of the suite.
@@ -193,8 +239,10 @@ Running record of what's built and verified, newest last. The parity ledger
 - Real Spotify writes (reorder, save to Spotify, likes by the assistant) and the real
   ChatGPT/OpenAI flows weren't run against your accounts.
 - A signed archive: signing needs your team; nothing about signing is stored.
-- Distribution: LAME is linked statically (LGPL relinking), and the provider constraints in
-  ARCHITECTURE.md apply. Personal builds only.
+- Distribution: 1.0.0-beta.22 is published as an unsigned .ipa (prerelease `ios-v1.0.0-beta.22`
+  on glass-releases, not marked latest so the Mac updater's feed is untouched), with its complete
+  source in glass-releases/source-ios (LAME is linked statically; the source meets the LGPL's
+  relinking requirement). The provider constraints in ARCHITECTURE.md still apply.
 
 ## Build notes
 
@@ -204,7 +252,10 @@ Running record of what's built and verified, newest last. The parity ledger
 - Simulator: "Glass iPhone 17 Pro" (`ios/build/sim-id`). Launch flags: `-demo`,
   `-route playlist|artist|album|home|search|liked|local|settings|nowplaying`,
   `-pane lyrics|queue|playlist|devices`, `-lyrics word|line|plain|instrumental|none|ambiguous`,
-  `-viz`, `-autoSignIn`, `-ephemeralSignIn`; debug builds only: `-probeSpotify <credentials.json>
+  `-viz`, `-autoSignIn`, `-ephemeralSignIn`, `-demoFree` (the demo account is Spotify Free),
+  `-demoShare` (sharing runs for real as the demo account, with the desktop's `GLASS_DEMO_SHARE`),
+  `-demoFolders fresh|kept` (the demo's Local Files
+  reads real folders and opens picked ones; `fresh` forgets them first); debug builds only: `-probeSpotify <credentials.json>
   [-probeEngine] [-probePlay]`, `-probeSave [-mp3]`, `-probeBonjour`, `-probeHashes`,
   `-assistantMock <base URL>` (the assistant against scripts/mock-openai.py), `-probeTranslate`
   (what the Translation framework offers here, to Documents/probe.log), `-mockTranslate`

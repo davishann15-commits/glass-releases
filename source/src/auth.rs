@@ -64,23 +64,53 @@ pub fn cancel_sign_in() {
     }
 }
 
+#[cfg(not(glass_mobile))]
 pub fn has_saved_session() -> bool {
     session_path().exists()
 }
 
+#[cfg(not(glass_mobile))]
 pub fn forget_session() {
     let _ = std::fs::remove_file(session_path());
+    // The playback engine's reusable login (librespot's), for the same account.
+    let _ = std::fs::remove_file(crate::config::config_dir().join("credentials.json"));
 }
 
 /// Writes the session, readable only by this user.
+#[cfg(not(glass_mobile))]
 fn save_refresh(token: &str) -> Result<()> {
     crate::config::write_private(&session_path(), serde_json::to_string(&Stored { refresh_token: token.into() })?.as_bytes())?;
     Ok(())
 }
 
+#[cfg(not(glass_mobile))]
 fn load_refresh() -> Option<String> {
     let s = std::fs::read_to_string(session_path()).ok()?;
     serde_json::from_str::<Stored>(&s).ok().map(|s| s.refresh_token)
+}
+
+// iOS (ios/core): the refresh token lives in the Keychain, not in a file.
+#[cfg(glass_mobile)]
+const KEYCHAIN_KEY: &str = "spotify-refresh-token";
+
+#[cfg(glass_mobile)]
+pub fn has_saved_session() -> bool {
+    load_refresh().is_some()
+}
+
+#[cfg(glass_mobile)]
+pub fn forget_session() {
+    let _ = crate::platform::secrets().delete(KEYCHAIN_KEY);
+}
+
+#[cfg(glass_mobile)]
+fn save_refresh(token: &str) -> Result<()> {
+    crate::platform::secrets().set(KEYCHAIN_KEY, token).map_err(|e| anyhow!("{e}"))
+}
+
+#[cfg(glass_mobile)]
+fn load_refresh() -> Option<String> {
+    crate::platform::secrets().get(KEYCHAIN_KEY).ok().flatten().filter(|t| !t.is_empty())
 }
 
 /// Holds the current access token and refreshes it when it expires.
@@ -94,6 +124,14 @@ impl Auth {
     pub async fn sign_in(client_id: &str) -> Result<Self> {
         let id = client_id.to_string();
         let token = tokio::task::spawn_blocking(move || client(&id)?.get_access_token().map_err(|e| anyhow!("{e}"))).await??;
+        save_refresh(&token.refresh_token)?;
+        Ok(Self { client_id: client_id.into(), token: Mutex::new(token) })
+    }
+
+    /// A sign-in finished elsewhere (iOS: the system's web sign-in sheet, see
+    /// ios/core/src/signin.rs). Keeps its refresh token like `sign_in` does.
+    #[cfg(glass_mobile)]
+    pub fn from_token(client_id: &str, token: OAuthToken) -> Result<Self> {
         save_refresh(&token.refresh_token)?;
         Ok(Self { client_id: client_id.into(), token: Mutex::new(token) })
     }

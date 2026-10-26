@@ -17,6 +17,13 @@ pub struct LocalPlaylist {
     /// The assistant draft this was saved from, so a retried save can't make a second copy.
     #[serde(default)]
     pub from_draft: Option<String>,
+    /// The Spotify playlist it was downloaded from (Share ▸ Download as …): downloading
+    /// that again brings this one up to date instead of making another.
+    #[serde(default)]
+    pub source: Option<String>,
+    /// Its cover, an image file (a downloaded playlist's, beside its songs).
+    #[serde(default)]
+    pub cover: Option<PathBuf>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -96,9 +103,72 @@ impl Playlists {
             created: t,
             updated: t,
             from_draft: from_draft.map(str::to_string),
+            source: None,
+            cover: None,
         });
         self.commit(list, Some(Undo::Created(id.clone())))?;
         Ok((id, true))
+    }
+
+    /// Rewrites every song's and cover's path (iOS: the app's folder moved; see
+    /// `paths::rebase`), keeping the list on disk in step. Not undoable: nothing changes
+    /// for the user.
+    #[cfg_attr(not(glass_mobile), allow(dead_code))]
+    pub fn map_paths(&mut self, f: impl Fn(&std::path::Path) -> PathBuf) {
+        let mut list = self.list.clone();
+        for p in &mut list {
+            p.tracks = p.tracks.iter().map(|t| f(t)).collect();
+            p.cover = p.cover.as_deref().map(&f);
+        }
+        if list != self.list
+            && let Err(e) = self.commit(list, None)
+        {
+            log::warn!("local playlists' paths weren't updated: {e}");
+        }
+    }
+
+    /// The local copy of a downloaded Spotify playlist (`source`, its URI): made the
+    /// first time, then its songs (in the playlist's order), name, description and
+    /// cover brought up to date by each later download. Undoable; returns its ID.
+    pub fn from_download(&mut self, source: &str, name: &str, description: &str, tracks: Vec<PathBuf>, cover: Option<PathBuf>) -> Result<String, String> {
+        let name: String = name.trim().chars().take(120).collect();
+        if name.is_empty() {
+            return Err("A playlist needs a name.".into());
+        }
+        let mut list = self.list.clone();
+        let t = now();
+        if let Some(p) = list.iter_mut().find(|p| p.source.as_deref() == Some(source)) {
+            let old = p.clone();
+            let id = p.id.clone();
+            p.tracks = tracks;
+            p.name = name;
+            if !description.is_empty() {
+                p.description = description.chars().take(500).collect();
+            }
+            if cover.is_some() {
+                p.cover = cover;
+            }
+            if *p == old {
+                return Ok(id);
+            }
+            p.updated = t;
+            self.commit(list, Some(Undo::Replaced(old)))?;
+            return Ok(id);
+        }
+        let id = format!("lp_{}", &uuid::Uuid::new_v4().simple().to_string()[..12]);
+        list.push(LocalPlaylist {
+            id: id.clone(),
+            name,
+            description: description.chars().take(500).collect(),
+            tracks,
+            created: t,
+            updated: t,
+            from_draft: None,
+            source: Some(source.to_string()),
+            cover,
+        });
+        self.commit(list, Some(Undo::Created(id.clone())))?;
+        Ok(id)
     }
 
     /// Replaces a playlist's songs (and optionally its name); undoable.
@@ -203,6 +273,23 @@ mod tests {
         assert!(new);
         let (b, new) = p.create("Night Drive", "", vec!["/m/a.mp3".into()], Some("d1")).unwrap();
         assert_eq!((a, new, p.list.len()), (b, false, 1));
+    }
+
+    #[test]
+    fn a_downloaded_playlist_is_kept_up_to_date() {
+        let mut p = Playlists::in_memory();
+        let id = p.from_download("spotify:playlist:x", "Night Drive", "Slow songs", vec!["/m/a.m4a".into(), "/m/b.m4a".into()], Some("/m/Night Drive/cover.jpg".into())).unwrap();
+        // Downloaded again, renamed and with a song more: the same playlist, in the new order.
+        let again = p.from_download("spotify:playlist:x", "Night Drive II", "", vec!["/m/c.m4a".into(), "/m/a.m4a".into(), "/m/b.m4a".into()], None).unwrap();
+        assert_eq!((id.clone(), p.list.len()), (again, 1));
+        let pl = p.get(&id).unwrap();
+        assert_eq!((pl.name.as_str(), pl.description.as_str(), pl.tracks.len()), ("Night Drive II", "Slow songs", 3));
+        assert_eq!(pl.tracks[0], PathBuf::from("/m/c.m4a"));
+        assert_eq!(pl.cover.as_deref(), Some(std::path::Path::new("/m/Night Drive/cover.jpg")), "kept when the new download has none");
+        p.undo().unwrap();
+        assert_eq!(p.get(&id).unwrap().tracks.len(), 2, "undo puts the earlier download back");
+        p.from_download("spotify:playlist:y", "Other", "", vec![], None).unwrap();
+        assert_eq!(p.list.len(), 2, "another playlist is another copy");
     }
 
     #[test]

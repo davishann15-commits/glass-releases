@@ -12,9 +12,9 @@ use eframe::egui::{self, Color32, ColorImage, Rect, TextureHandle, TextureOption
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
-pub use crate::palette::{Lab, Palette, palette_of};
 #[cfg(test)]
 use crate::palette::contrast;
+pub use crate::palette::{Lab, Palette, palette_of};
 #[cfg(test)]
 use crate::theme_config::{Rgba, Theme};
 

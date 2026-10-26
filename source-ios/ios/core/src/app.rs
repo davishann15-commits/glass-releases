@@ -38,6 +38,8 @@ pub enum Load {
 
 /// The engine status while the engine can't start (it's tried again by itself).
 const ENGINE_FAILED: &str = "Can't connect to Spotify.";
+/// The engine's status for an account that isn't Premium (Settings, Devices).
+const NEEDS_PREMIUM: &str = "Spotify plays songs only for Premium accounts. Browsing, Local Files and Download as work without it.";
 
 #[derive(Default)]
 pub struct Playback {
@@ -292,6 +294,8 @@ pub struct MobileApp {
     signin_gen: u64,
     resume_retry: Option<(Instant, u32)>,
     engine_retry: Option<(Instant, u32)>,
+    /// An engine is being started (one at a time).
+    engine_launching: bool,
     data_gen: u64,
     invalidated: Vec<(u64, String)>,
     pub api: Option<Api>,
@@ -421,6 +425,7 @@ impl MobileApp {
             signin_gen: 0,
             resume_retry: None,
             engine_retry: None,
+            engine_launching: false,
             data_gen: 0,
             invalidated: Vec::new(),
             api: None,
@@ -483,16 +488,30 @@ impl MobileApp {
             published: Default::default(),
             outbox: Vec::new(),
         };
-        // Folders and songs in the app's Documents as they are this run: iOS moves the
-        // app's folder when a new build is installed (see `paths::rebase`).
-        let tidy = crate::local::tidy_sources(&app.settings.local_dirs);
-        let save_dir = app.settings.save_dir.as_deref().map(crate::paths::rebase);
+        // Folders and songs where they are this run: iOS moves the app's Documents when a
+        // new build is installed, and another app's folder picked in Files when that app
+        // is updated (see `paths::relocate`). A folder the app can't open any more (its
+        // bookmark was lost) stops being a source; the folders picked as sources are ones.
+        // (The demo never saves its settings; its local playlists aren't touched.)
+        let picked = crate::paths::picked();
+        let here = |d: &std::path::Path| crate::paths::relocate(d, picked);
+        let open = |d: &std::path::Path| !cfg!(target_os = "ios") || crate::paths::readable(d, picked);
+        let mut dirs: Vec<std::path::PathBuf> = app.settings.local_dirs.iter().map(|d| here(d)).filter(|d| open(d)).collect();
+        for f in picked.iter().filter(|f| f.source && f.path.is_dir()) {
+            if !crate::local::read_by(&dirs, &f.path) {
+                dirs.push(f.path.clone());
+            }
+        }
+        let tidy = crate::local::tidy_sources(&dirs);
+        let save_dir = app.settings.save_dir.as_deref().map(here).filter(|d| open(d));
         if tidy != app.settings.local_dirs || save_dir != app.settings.save_dir {
             app.settings.local_dirs = tidy;
             app.settings.save_dir = save_dir;
             app.mark_settings_dirty();
         }
-        app.playlists.map_paths(crate::paths::rebase);
+        if !demo {
+            app.playlists.map_paths(here);
+        }
         if !demo {
             let saves = app.settings.save_dir.clone().unwrap_or_else(crate::save_song::default_dir);
             let cache = app.lyrics.cache.clone();
@@ -586,6 +605,31 @@ impl MobileApp {
 
     pub fn is_premium(&self) -> bool {
         self.me.as_ref().map(|m| s(m, "product") == "premium").unwrap_or(true)
+    }
+
+    /// Desktop `account_known`: `/me` answered for the first time since signing in.
+    /// Spotify streams only to Premium accounts: they get the playback engine; a free
+    /// account browses, plays Local Files and saves songs (Download as), without one.
+    fn account_known(&mut self) {
+        if self.is_premium() {
+            if self.engine.is_none() {
+                self.start_engine();
+            }
+        } else {
+            self.engine = None;
+            self.engine_retry = None;
+            self.pending_play = None;
+            self.engine_status = NEEDS_PREMIUM.into();
+        }
+    }
+
+    /// A song from Spotify was to play on a free account.
+    fn needs_premium(&mut self, quiet: bool) {
+        if quiet {
+            self.ai.tell_model("Spotify plays songs only for Premium accounts and this one is Spotify Free, so nothing is playing.");
+        } else {
+            self.toast("Playing songs from Spotify needs Spotify Premium");
+        }
     }
 
     // ------------------------------------------------------------ data
@@ -832,6 +876,10 @@ impl MobileApp {
 
     /// Desktop `start_play`.
     fn start_play(&mut self, p: PendingPlay) {
+        if !self.is_premium() {
+            self.needs_premium(p.quiet);
+            return;
+        }
         self.dj_cancel();
         self.stop_local();
         self.replaced_dead_engine(false);
@@ -1102,6 +1150,10 @@ impl MobileApp {
                 }
             }
             Action::Radio(uri) => {
+                if !self.is_premium() {
+                    self.needs_premium(false);
+                    return;
+                }
                 self.stop_local();
                 let radio_ok = self.is_local() && self.engine.as_ref().map(|e| e.load_radio(&uri).is_ok()).unwrap_or(false);
                 if radio_ok {
@@ -1398,6 +1450,7 @@ impl MobileApp {
             Action::RestartEngine => {
                 self.engine = None;
                 self.engine_retry = None;
+                self.engine_launching = false;
                 self.start_engine();
             }
             Action::RescanLocal => {
@@ -1719,6 +1772,8 @@ impl MobileApp {
         self.engine_uri.clear();
         self.dj_voice = None;
         self.engine_retry = None;
+        self.engine_launching = false;
+        self.engine_status = "Not started".into();
         self.auth_state = AuthState::SignedOut;
         self.outbox.push(CoreEvent::SignedOut);
     }
@@ -1794,6 +1849,10 @@ impl MobileApp {
     }
 
     fn download(&mut self, uri: String, name: String) {
+        if !self.is_premium() {
+            self.toast("Downloading to play offline needs Spotify Premium. Share › Download as M4A or MP3 keeps a copy without it.");
+            return;
+        }
         let Some(api) = self.api.clone() else { return };
         let d = self.downloads.clone();
         let tx = self.tx.clone();
@@ -1878,7 +1937,7 @@ impl MobileApp {
     }
 
     pub fn scan_local(&mut self) {
-        if self.local_scanning || self.demo {
+        if self.local_scanning || (self.demo && !crate::demo::real_folders()) {
             return;
         }
         self.local_scanning = true;
@@ -1996,6 +2055,7 @@ impl MobileApp {
         self.engine = None;
         self.engine_uri.clear();
         self.upcoming = None;
+        self.engine_launching = false;
         self.start_engine();
         match body {
             Some(body) => {
@@ -2035,6 +2095,14 @@ impl MobileApp {
 
     fn start_engine(&mut self) {
         let Some(api) = self.api.clone() else { return };
+        if !self.is_premium() {
+            self.engine_status = NEEDS_PREMIUM.into();
+            return;
+        }
+        if self.engine_launching {
+            return;
+        }
+        self.engine_launching = true;
         self.engine_status = "Connecting…".into();
         let settings = self.settings.clone();
         let dsp = self.dsp.clone();
@@ -2278,11 +2346,12 @@ impl MobileApp {
                 self.api = Some(Api::new(auth, &self.settings.proxy, self.log.clone()).on_player_change(pushed));
                 self.auth_state = AuthState::SignedIn;
                 let (tx, api, generation) = (self.tx.clone(), self.api.clone().unwrap(), self.data_gen);
+                // The engine starts once this says what kind of account it is
+                // (`account_known`): Spotify streams only to Premium accounts.
                 self.rt.spawn(async move {
                     let r = api.get("/me").await.map(Arc::new).map_err(|e| e.to_string());
                     tx.send(Msg::Data { key: "/me".into(), result: r, generation });
                 });
-                self.start_engine();
             }
             Msg::SignedIn(g, Err(e)) => {
                 let refused = ["no saved session", "invalid_grant", "invalid_client", "invalid_request", "unauthorized_client"].iter().any(|w| e.contains(w));
@@ -2312,7 +2381,11 @@ impl MobileApp {
                 match result {
                     Ok(v) => {
                         if key == "/me" {
+                            let first = self.me.is_none();
                             self.me = Some((*v).clone());
+                            if first {
+                                self.account_known();
+                            }
                         }
                         if key.starts_with("ALL") {
                             self.sync_download(&key, &v);
@@ -2338,6 +2411,11 @@ impl MobileApp {
                         self.fetched_at.insert(key, Instant::now());
                     }
                     Err(e) => {
+                        // Not known what kind of account this is: start as before (a free
+                        // account's engine is let go once it is).
+                        if key == "/me" && self.me.is_none() {
+                            self.start_engine();
+                        }
                         self.fetched_at.insert(key.clone(), Instant::now());
                         self.data.insert(key, Load::Failed(e));
                     }
@@ -2387,7 +2465,12 @@ impl MobileApp {
                     self.set_saved(u, b);
                 }
             }
+            Msg::EngineReady(Ok(_)) if !self.is_premium() => {
+                self.engine_launching = false;
+                self.engine_status = NEEDS_PREMIUM.into();
+            }
             Msg::EngineReady(Ok(engine)) => {
+                self.engine_launching = false;
                 self.engine_retry = None;
                 self.engine_status = format!("Connected · other devices see this iPhone as “{}”", self.settings.device_name);
                 let tx = self.tx.clone();
@@ -2404,6 +2487,7 @@ impl MobileApp {
                 }
             }
             Msg::EngineReady(Err(e)) => {
+                self.engine_launching = false;
                 if self.pending_play.take().is_some() {
                     self.pb.is_playing = false;
                 }

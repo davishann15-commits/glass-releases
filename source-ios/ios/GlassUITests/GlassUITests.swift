@@ -159,7 +159,7 @@ final class GlassUITests: XCTestCase {
         waitFor(search)
         search.tap()
         search.typeText("assistant")
-        app.keyboards.buttons["search"].firstMatch.tap()
+        search.typeText("\n")
         let plan = app.buttons["my ChatGPT plan"].firstMatch
         reveal(plan)
         plan.tap()
@@ -207,7 +207,7 @@ final class GlassUITests: XCTestCase {
         waitFor(search)
         search.tap()
         search.typeText("theme")
-        app.keyboards.buttons["search"].firstMatch.tap()
+        search.typeText("\n")
         visibleButton("Customize").tap()
         let midnight = app.buttons["Preset midnight"].firstMatch
         tapWhenReady(midnight)
@@ -308,8 +308,10 @@ final class GlassUITests: XCTestCase {
             let speed = ProcessInfo.processInfo.environment["SWIPE_SPEED"].flatMap(Double.init).map { XCUIGestureVelocity(CGFloat($0)) } ?? .slow
             from.press(forDuration: 0.05, thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.95, dy: y)), withVelocity: speed, thenHoldForDuration: 0)
             sleep(1)
-            let back = text("good evening").exists || text("search your library").exists
+            // The greeting (good morning, afternoon or evening) heads the library and home pages.
+            let back = text("good ").exists
             print("SWIPE \(name): back=\(back)")
+            if !back { shot("swipe-back-\(name)-failed") }
             XCTAssertTrue(back, "swipe back from \(name)")
             app.terminate()
         }
@@ -325,7 +327,7 @@ final class GlassUITests: XCTestCase {
         waitFor(search)
         search.tap()
         search.typeText("translat")
-        app.keyboards.buttons["search"].firstMatch.tap()
+        search.typeText("\n")
         tapWhenReady(app.buttons["original + translation"].firstMatch)
         // "Translate into": "system" at first (or what an earlier run left).
         let into = app.textFields.matching(NSPredicate(format: "value IN %@", ["system", "es"])).firstMatch

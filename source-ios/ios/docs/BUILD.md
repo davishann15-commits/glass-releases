@@ -52,14 +52,21 @@ use it. No signing identity or team is stored in the repository.
 # Rust: the core's own tests (host)
 cd ios/core && cargo test --lib
 
-# UI tests (simulator). The assistant tests need the mock OpenAI server:
+# UI tests (simulator). The assistant tests need the mock OpenAI server, and
+# LocalFoldersUITests a folder of songs in the simulator's Files › On My iPhone:
 cd ios
 python3 -I scripts/mock-openai.py 8765 build/mock-openai.log &
+scripts/sim-files-fixture.sh <simulator UDID>
 TEST_RUNNER_GLASS_SHOTS=$PWD/build/shots xcodebuild -project Glass.xcodeproj -scheme Glass \
   -destination 'platform=iOS Simulator,name=iPhone 17 Pro' test
 ```
 
 Screenshots from the UI tests land in `build/shots/` (and in the result bundle).
+
+Sharing for real, over this Mac's network, between the simulator and the desktop app
+(both signed in as the demo account, which only demos have): build the desktop app
+(`cargo build` at the top), then `scripts/live-share.sh <simulator UDID>`. It runs
+`SharingLiveUITests` (skipped in the normal suite) and the desktop's `live_demo_computer`.
 
 ## Third-party notices
 

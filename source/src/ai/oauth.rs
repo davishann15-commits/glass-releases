@@ -69,12 +69,12 @@ impl std::fmt::Display for AuthError {
             AuthError::ClientMismatch => write!(f, "The sign-in came back for a different app registration; nothing was changed."),
             AuthError::RegistrationIncomplete => write!(f, "OpenAI didn't finish registering Glass; try signing in again."),
             AuthError::InvalidGrant => write!(f, "The sign-in code expired; try again."),
-            AuthError::InvalidClient => write!(f, "OpenAI doesn't recognize this app registration (invalid_client)."),
-            AuthError::SignInAgain(why) => write!(f, "Your ChatGPT sign-in ended ({why}); sign in again."),
-            AuthError::IdToken(why) => write!(f, "OpenAI's identity token didn't verify: {why}"),
+            AuthError::InvalidClient => write!(f, "OpenAI doesn't recognize this app's sign-in. Try again later."),
+            AuthError::SignInAgain(_) => write!(f, "Your ChatGPT sign-in ended; sign in again."),
+            AuthError::IdToken(_) => write!(f, "OpenAI's sign-in didn't check out; try again."),
             AuthError::WrongAccount => write!(f, "A different ChatGPT account signed in than the one selected; nothing was changed."),
-            AuthError::Http(code, msg) => write!(f, "OpenAI sign-in answered {code}: {msg}"),
-            AuthError::Network(e) => write!(f, "Couldn't reach OpenAI ({e})."),
+            AuthError::Http(..) => write!(f, "OpenAI's sign-in didn't work right now; try again."),
+            AuthError::Network(_) => write!(f, "Couldn't reach OpenAI. Check your connection."),
             // Whole sentences, from the store (`secrets::friendly`) or whoever asked it.
             AuthError::Keyring(e) => write!(f, "{e}"),
             AuthError::TimedOut => write!(f, "Sign-in timed out waiting for the browser."),
@@ -264,7 +264,16 @@ impl Listener {
                 let cb = parse_callback(query);
                 // Only this attempt's answer ends the wait.
                 let fresh = cb.state.as_deref() == Some(state);
+                #[cfg(not(glass_mobile))]
                 let answer = if fresh { page("200 OK", DONE_PAGE) } else { page("400 Bad Request", STALE_PAGE) };
+                // iOS: the page is in the system's web sign-in sheet, which closes when
+                // sent to the app's own scheme (the code has already arrived here).
+                #[cfg(glass_mobile)]
+                let answer = if fresh {
+                    "HTTP/1.1 302 Found\r\nLocation: glass-ios://assistant-signed-in\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_string()
+                } else {
+                    page("400 Bad Request", STALE_PAGE)
+                };
                 let _ = sock.write_all(answer.as_bytes()).await;
                 let _ = sock.shutdown().await;
                 if fresh {
@@ -566,7 +575,13 @@ pub mod tests {
         let waiting = tokio::spawn(async move { l.wait("s", Duration::from_secs(5)).await });
         assert!(get("/favicon.ico".into()).await.starts_with("HTTP/1.1 404"));
         assert!(get("/auth/callback?code=old&state=stale".into()).await.starts_with("HTTP/1.1 400"), "a stale tab doesn't end the sign-in");
-        assert!(get("/auth/callback?code=x&state=s&client_id=oaiapp_1".into()).await.starts_with("HTTP/1.1 200"));
+        let done = get("/auth/callback?code=x&state=s&client_id=oaiapp_1".into()).await;
+        // iOS sends the sign-in sheet back to the app instead of showing a page.
+        if cfg!(glass_mobile) {
+            assert!(done.starts_with("HTTP/1.1 302") && done.contains("Location: glass-ios://assistant-signed-in"), "{done}");
+        } else {
+            assert!(done.starts_with("HTTP/1.1 200"), "{done}");
+        }
         let cb = waiting.await.unwrap().unwrap();
         assert_eq!((cb.code.as_deref(), cb.client_id.as_deref()), (Some("x"), Some("oaiapp_1")));
     }

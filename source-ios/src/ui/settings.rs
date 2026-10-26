@@ -237,7 +237,7 @@ fn body(app: &mut App, ui: &mut Ui, c: &Ctx) {
         c,
         "Share with Glass on your other devices",
         &format!(
-            "Glass on your other devices on this network, signed in to this account, finds this computer by itself: it can see and get the songs in Local Files, and send songs here. Right-click songs to send them; playlists get their missing local songs from your other devices. Received songs go to {}.",
+            "Glass on your other devices (a Mac, a Linux PC, an iPhone) on this network, signed in to this account, shows up in Local Files by itself: click one to see its songs and get them, or right-click songs to send them. Playlists get their missing local songs from your other devices. Received songs go to {}.",
             inbox.display()
         ),
         |ui| {

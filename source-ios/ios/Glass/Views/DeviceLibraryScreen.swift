@@ -120,7 +120,8 @@ struct DeviceSongRow: View {
                 .frame(width: 26)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(song.title.isEmpty ? "Untitled" : song.title).gFont(14).foregroundStyle(song.here ? look.muted : look.foreground).lineLimit(1)
-                    Text(song.here ? "on this iPhone" : [song.artist, song.album].filter { !$0.isEmpty }.joined(separator: " · ")).gFont(12).foregroundStyle(look.muted).lineLimit(1)
+                    let about = song.here ? "on this iPhone" : [song.artist, song.album].filter { !$0.isEmpty }.joined(separator: " · ")
+                    if !about.isEmpty { Text(about).gFont(12).foregroundStyle(look.muted).lineLimit(1) }
                 }
                 Spacer(minLength: 4)
                 Text(Fmt.ms(song.durationMs)).gFont(12).foregroundStyle(look.sub).monospacedDigit()

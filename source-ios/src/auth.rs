@@ -72,6 +72,8 @@ pub fn has_saved_session() -> bool {
 #[cfg(not(glass_mobile))]
 pub fn forget_session() {
     let _ = std::fs::remove_file(session_path());
+    // The playback engine's reusable login (librespot's), for the same account.
+    let _ = std::fs::remove_file(crate::config::config_dir().join("credentials.json"));
 }
 
 /// Writes the session, readable only by this user.

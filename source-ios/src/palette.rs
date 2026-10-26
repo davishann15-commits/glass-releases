@@ -174,7 +174,6 @@ impl Palette {
         t.viz.color = mix(t.viz.color, accent);
         t.viz.color2 = mix(t.viz.color2, self.accent.with(0.92, 0.05).rgba(t.viz.color2.0[3] as f32 / 255.0));
     }
-
 }
 
 pub(crate) fn lerp_rgba(a: Rgba, b: Rgba, t: f32) -> Rgba {
@@ -247,4 +246,3 @@ pub fn palette_of(bytes: &[u8]) -> Option<Palette> {
     let pixels: Vec<[u8; 3]> = img.pixels().filter(|p| p.0[3] >= 128).map(|p| [p.0[0], p.0[1], p.0[2]]).collect();
     Palette::from_pixels(&pixels)
 }
-

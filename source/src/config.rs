@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 /// Written into settings.json; see `Settings::upgrade`.
-const SETTINGS_VERSION: u32 = 1;
+const SETTINGS_VERSION: u32 = 2;
 
 /// Spotify's desktop client ID, the same one librespot uses by default.
 /// You can replace it with your own app's ID in settings.json.
@@ -288,7 +288,7 @@ pub struct Settings {
     pub library_sort: LibrarySort,
     pub show_local_files: bool,
     pub local_dirs: Vec<PathBuf>,
-    /// Send and receive local files with Glass on your other computers on this network.
+    /// Local files with Glass on your other devices on this network (see `share`).
     pub share_local_files: bool,
     pub local_view: LocalView,
     /// Share ▸ "Download as …" (see `save_song`).
@@ -335,8 +335,12 @@ pub struct Settings {
 
 impl Default for Settings {
     fn default() -> Self {
-        let music = directories::UserDirs::new().and_then(|d| d.audio_dir().map(|p| p.to_path_buf()));
-        let downloads = directories::UserDirs::new().and_then(|d| d.download_dir().map(|p| p.to_path_buf()));
+        #[cfg(not(glass_mobile))]
+        let (music, downloads) =
+            (directories::UserDirs::new().and_then(|d| d.audio_dir().map(|p| p.to_path_buf())), directories::UserDirs::new().and_then(|d| d.download_dir().map(|p| p.to_path_buf())));
+        // iOS: the app's own Documents folder (music imported, saved or received goes there).
+        #[cfg(glass_mobile)]
+        let (music, downloads): (Option<PathBuf>, Option<PathBuf>) = (Some(crate::paths::documents()), None);
         Self {
             version: SETTINGS_VERSION,
             client_id: DEFAULT_CLIENT_ID.into(),
@@ -355,7 +359,7 @@ impl Default for Settings {
             library_sort: LibrarySort::Recents,
             show_local_files: true,
             local_dirs: [music, downloads].into_iter().flatten().collect(),
-            share_local_files: false,
+            share_local_files: true,
             local_view: LocalView::Recent,
             save_format: crate::save_song::Format::M4a,
             save_mp3_kbps: 320,
@@ -411,10 +415,11 @@ impl Settings {
 
     /// Changes a settings file from an older Glass needs once.
     fn upgrade(&mut self) {
-        // 1.0.0-beta.6: sharing with other computers became opt-in. It was on for
-        // everyone before, so it starts off again rather than staying on unasked.
-        if self.version < 1 {
-            self.share_local_files = false;
+        // Version 2: sharing with your other devices needs nothing set up any more
+        // (no pairing code), and is on, so they find each other by themselves. It
+        // was opt-in from 1.0.0-beta.6 (version 1) while it needed pairing.
+        if self.version < 2 {
+            self.share_local_files = true;
         }
         self.version = SETTINGS_VERSION;
     }
@@ -478,15 +483,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn sharing_starts_off_after_upgrading() {
-        let mut old: Settings = serde_json::from_str(r#"{"share_local_files": true, "volume": 3.0}"#).unwrap();
-        assert_eq!(old.version, 0, "a file from before versions");
+    fn sharing_is_on_after_upgrading_and_a_later_choice_is_kept() {
+        let mut old: Settings = serde_json::from_str(r#"{"version": 1, "share_local_files": false, "volume": 3.0}"#).unwrap();
         old.upgrade();
         old.sanitize();
-        assert!(!old.share_local_files, "on only by the old default");
+        assert!(old.share_local_files, "on now that it needs no pairing");
         assert_eq!((old.version, old.volume), (SETTINGS_VERSION, 1.0));
-        let mut chosen: Settings = serde_json::from_str(r#"{"version": 1, "share_local_files": true}"#).unwrap();
+        let mut chosen: Settings = serde_json::from_str(r#"{"version": 2, "share_local_files": false}"#).unwrap();
         chosen.upgrade();
-        assert!(chosen.share_local_files, "turned on since: kept");
+        assert!(!chosen.share_local_files, "turned off since: kept");
+        assert!(Settings::default().share_local_files);
     }
 }

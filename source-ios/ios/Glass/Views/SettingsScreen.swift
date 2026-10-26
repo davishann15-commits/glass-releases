@@ -254,8 +254,9 @@ struct SettingsScreen: View {
         saving.append(row("Folder", "Songs are saved to \(LocalImport.display(st?.saveDirEffective ?? "")). Glass's own folder shows in the Files app under On My iPhone › Glass.") {
             SaveFolderButtons(custom: s.saveDir != nil)
         })
-        saving.append(row("Show saved songs in Local Files", (st?.saveDirEffective ?? "").contains("/Documents") ? "Already in Local Files (it's inside Glass's folder)." : "Adds the folder above to Local Files.") {
-            if !(st?.saveDirEffective ?? "").contains("/Documents"), let dir = st?.saveDirEffective {
+        let savedInGlass = LocalImport.inGlass(st?.saveDirEffective ?? "")
+        saving.append(row("Show saved songs in Local Files", savedInGlass ? "Already in Local Files (it's inside Glass's folder)." : "Adds the folder above to Local Files.") {
+            if !savedInGlass, let dir = st?.saveDirEffective {
                 BracketButton(title: "Add") { store.core.filesAdded(dirs: [dir]) }
             }
         })
@@ -269,8 +270,13 @@ struct SettingsScreen: View {
                 BracketButton(title: store.appleMusic?.pairing == nil ? "Set up" : "Open") { store.sheet = .appleMusic(paths: [], playlist: nil) }
             },
             toggle("Share with your other devices", "Glass on your other devices on the same Wi-Fi, signed in to this account, shows up in Local Files by itself: see its songs and get the ones you pick. Works while Glass is open.", \.shareLocalFiles),
-        ] + (store.local?.sources ?? []).filter { !$0.hasSuffix("/Documents") }.map { dir in
-            row("Show songs from", LocalImport.display(dir)) { BracketButton(title: "Remove") { store.core.removeSource(dir: dir) } }
+        ] + (store.local?.sources ?? []).filter { !LocalImport.inGlass($0) }.map { dir in
+            row("Show songs from", LocalImport.display(dir)) {
+                BracketButton(title: "Remove") {
+                    PickedFolders.forget(source: dir)
+                    store.core.removeSource(dir: dir)
+                }
+            }
         }))
 
         // Display
@@ -531,19 +537,19 @@ struct ApiKeyField: View {
 }
 
 
-/// The save folder: Glass's own (Documents/Glass), or one picked in Files, kept as a
-/// security-scoped bookmark and opened again at each launch.
+/// The save folder: Glass's own (Documents), or one picked in Files, kept as a
+/// security-scoped bookmark (`PickedFolders`) and opened again at each launch (the core
+/// goes back to Glass's own if it's gone).
 struct SaveFolderButtons: View {
     @Environment(Store.self) private var store
     let custom: Bool
     @State private var picking = false
-    static let key = "saveFolderBookmark"
 
     var body: some View {
         HStack(spacing: 0) {
             if custom {
                 BracketButton(title: "Reset") {
-                    UserDefaults.standard.removeObject(forKey: Self.key)
+                    PickedFolders.forgetSaveFolder()
                     store.editSettings { $0.saveDir = nil }
                 }
             }
@@ -551,23 +557,12 @@ struct SaveFolderButtons: View {
         }
         .fileImporter(isPresented: $picking, allowedContentTypes: [.folder]) { r in
             guard case let .success(url) = r, url.startAccessingSecurityScopedResource() else { return }
-            if let data = try? url.bookmarkData(options: [], includingResourceValuesForKeys: nil, relativeTo: nil) {
-                UserDefaults.standard.set(data, forKey: Self.key)
+            if LocalImport.inGlass(url.path) {
+                PickedFolders.forgetSaveFolder()
+            } else {
+                PickedFolders.keep(url, source: false)
             }
             store.editSettings { $0.saveDir = url.path }
-        }
-    }
-
-    /// At launch: open the picked folder again (or go back to Glass's own if it's gone).
-    @MainActor static func restore(store: Store) {
-        guard let data = UserDefaults.standard.data(forKey: key) else { return }
-        var stale = false
-        guard let url = try? URL(resolvingBookmarkData: data, options: [], relativeTo: nil, bookmarkDataIsStale: &stale), url.startAccessingSecurityScopedResource() else {
-            UserDefaults.standard.removeObject(forKey: key)
-            return
-        }
-        if stale, let fresh = try? url.bookmarkData(options: [], includingResourceValuesForKeys: nil, relativeTo: nil) {
-            UserDefaults.standard.set(fresh, forKey: key)
         }
     }
 }

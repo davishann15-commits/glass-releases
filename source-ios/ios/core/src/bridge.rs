@@ -33,6 +33,20 @@ pub struct CoreConfig {
     pub language: String,
     /// UIAccessibility's Reduce Motion at launch ([motion] reduce = "system" follows it).
     pub reduce_motion: bool,
+    /// Folders picked in Files (Local Files' sources, the save folder), opened again by
+    /// the app before the core starts.
+    pub picked_folders: Vec<PickedFolder>,
+}
+
+/// A folder picked in Files, as the app opened it this run (see `paths::Picked`).
+#[derive(uniffi::Record, Clone, Debug)]
+pub struct PickedFolder {
+    /// Where it is this run.
+    pub path: String,
+    /// Where it was when the app last opened it, if it has moved since.
+    pub was: Option<String>,
+    /// One of Local Files' sources (else only the save folder).
+    pub source: bool,
 }
 
 /// Events from the core, in the order they happened.

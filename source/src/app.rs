@@ -80,6 +80,11 @@ pub enum Route {
         artist: String,
         album: String,
     },
+    /// Another device's Local Files, to get some of its songs (by its `Peer::id`).
+    Device {
+        id: String,
+        name: String,
+    },
     Settings,
     Activity,
 }
@@ -176,16 +181,6 @@ pub enum Modal {
     EditTags(Box<TagEditor>),
     /// Shown once, the first time ChatGPT plan usage is enabled.
     AiWelcome,
-}
-
-/// A computer to pair with: both screens show `code`.
-#[derive(Clone, Debug)]
-pub struct Pairing {
-    pub id: u64,
-    pub name: String,
-    pub code: String,
-    /// It asked (rather than this computer).
-    pub incoming: bool,
 }
 
 /// What the tag editor is showing.
@@ -290,13 +285,6 @@ pub enum Action {
     Invalidate(String),
     RestartEngine,
     RescanLocal,
-    /// The answer to a pairing request.
-    SharePair {
-        id: u64,
-        yes: bool,
-    },
-    /// Unpairs a computer (by its key).
-    ShareForget(String),
     /// Open the tag editor for a local file.
     EditTags(std::path::PathBuf),
     /// Pick an image for the tag editor's cover.
@@ -394,8 +382,15 @@ pub enum Action {
         paths: Vec<std::path::PathBuf>,
     },
     /// Get a playlist's missing local songs (`spotify:local:` URIs) from
-    /// your other computers.
+    /// your other devices.
     GetFromDevices(Vec<String>),
+    /// List another device's Local Files (on its page, `Route::Device`).
+    BrowseDevice(String),
+    /// Get these of the browsed device's songs (`FileMeta::id`s).
+    GetFromDevice {
+        peer: String,
+        ids: Vec<String>,
+    },
     /// Audio files or folders dropped on the window or picked with "Add
     /// local files…": they join Local Files (their folders become sources
     /// so they play) and, when there's a target, that playlist.
@@ -593,6 +588,9 @@ pub struct SaveSet {
     pub finished: bool,
 }
 
+/// The playback engine's status for an account that isn't Premium (Settings, Devices).
+const NEEDS_PREMIUM: &str = "Not started: Spotify plays songs only for Premium accounts. Browsing, Local Files and Share ▸ Download as work without it.";
+
 /// Something to play once the playback engine is ready (see `App::start_play`).
 pub(crate) struct PendingPlay {
     pub body: Value,
@@ -642,6 +640,8 @@ pub struct App {
     resume_retry: Option<(Instant, u32)>,
     /// The playback engine failed to start: when to try again, and how many times it has.
     engine_retry: Option<(Instant, u32)>,
+    /// An engine is being started (one at a time).
+    engine_launching: bool,
     /// The playing song's lyrics timing offset, by its lyrics key (see `lyrics_song_offset`).
     song_offset: std::cell::RefCell<Option<(String, i64)>>,
     /// Bumped by `invalidate`, which notes what it invalidated: answers to matching
@@ -657,14 +657,19 @@ pub struct App {
     /// A play request made while the engine was still connecting.
     pub(crate) pending_play: Option<PendingPlay>,
     pub downloads: Downloads,
-    /// Local files sharing with Glass on your other computers (while it's on).
+    /// Local files sharing with Glass on your other devices (while it's on).
     share: Option<crate::share::Share>,
     /// Sharing couldn't start; not retried until it's turned off and on.
     share_failed: bool,
-    /// Glass on your other computers, on this network.
+    /// Glass on your other devices, on this network, that songs can go to and from.
     pub share_peers: Vec<crate::share::Peer>,
-    /// Another computer asking to pair (see `share`), until it's answered.
-    pub pairing: Option<Pairing>,
+    /// This account's Glass on other devices that speaks another sharing protocol
+    /// (one of them needs updating).
+    pub share_others: Vec<crate::share::Peer>,
+    /// Another device's Local Files, on its page.
+    pub device: Option<crate::share::Browsed>,
+    /// The songs picked there (`FileMeta::id`s).
+    pub device_picks: HashSet<String>,
     /// Recent transfers, newest last.
     pub transfers: Vec<crate::share::Transfer>,
     /// The DJ speaking (its song waits until it's done).
@@ -878,6 +883,7 @@ impl App {
             signin_gen: 0,
             resume_retry: None,
             engine_retry: None,
+            engine_launching: false,
             song_offset: Default::default(),
             lyrics_search_seq: 0,
             data_gen: 0,
@@ -966,7 +972,9 @@ impl App {
             share: None,
             share_failed: false,
             share_peers: Vec::new(),
-            pairing: None,
+            share_others: Vec::new(),
+            device: None,
+            device_picks: HashSet::new(),
             transfers: Vec::new(),
             dj_voice: None,
             dj_waiting: false,
@@ -1018,7 +1026,7 @@ impl App {
         std::thread::spawn(move || {
             cache.prune();
             crate::save_song::sweep_work_files(&saves);
-            // Songs from other computers arrive in Music/Glass, wherever saves go.
+            // Songs from other devices arrive in Music/Glass, wherever saves go.
             if crate::share::inbox() != saves {
                 crate::save_song::sweep_work_files(&crate::share::inbox());
             }
@@ -1085,6 +1093,31 @@ impl App {
 
     pub fn is_premium(&self) -> bool {
         self.me.as_ref().map(|m| s(m, "product") == "premium").unwrap_or(true)
+    }
+
+    /// `/me` answered for the first time since signing in. Spotify streams only to
+    /// Premium accounts: they get the playback engine; a free account browses, plays
+    /// Local Files and saves songs (Share ▸ Download as), without one.
+    fn account_known(&mut self) {
+        if self.is_premium() {
+            if self.engine.is_none() {
+                self.start_engine();
+            }
+        } else {
+            self.engine = None;
+            self.engine_retry = None;
+            self.pending_play = None;
+            self.engine_status = NEEDS_PREMIUM.into();
+        }
+    }
+
+    /// A song from Spotify was to play on a free account.
+    fn needs_premium(&mut self, quiet: bool) {
+        if quiet {
+            self.ai.tell_model("Spotify plays songs only for Premium accounts and this one is Spotify Free, so nothing is playing.");
+        } else {
+            self.toast("Playing songs from Spotify needs Spotify Premium");
+        }
     }
 
     fn page_state(&self) -> PageState {
@@ -1291,11 +1324,20 @@ impl App {
         set.finished = true;
         let (name, kind, folder, skipped) = (set.name.clone(), set.kind, set.folder.clone(), set.skipped);
         let saved_paths: Vec<std::path::PathBuf> = set.keys.iter().filter_map(|k| self.saving.get(k)).filter(|j| j.status == Status::Done).map(|j| j.path.clone()).collect();
-        if kind == SetKind::Playlist
-            && !saved_paths.is_empty()
-            && let Err(e) = crate::save_song::write_playlist_file(&folder, &name, &saved_paths)
-        {
-            log::warn!("couldn't write the playlist file for {name}: {e}");
+        let mut local_playlist = false;
+        if kind == SetKind::Playlist && !saved_paths.is_empty() {
+            if let Err(e) = crate::save_song::write_playlist_file(&folder, &name, &saved_paths) {
+                log::warn!("couldn't write the playlist file for {name}: {e}");
+            }
+            // It becomes a local playlist too (downloading it again updates that one),
+            // and its folder joins Local Files so the songs play from it.
+            if !local::read_by(&self.settings.local_dirs, &folder) && local::add_source(&mut self.settings.local_dirs, folder.clone()) {
+                self.mark_settings_dirty();
+            }
+            match self.playlists.from_download(uri, &name, "", saved_paths.clone(), None) {
+                Ok(_) => local_playlist = true,
+                Err(e) => log::warn!("couldn't make the local playlist for {name}: {e}"),
+            }
         }
         let total = saved + failed + stopped;
         let mut text = match (saved, total) {
@@ -1311,6 +1353,9 @@ impl App {
         }
         if skipped > 0 {
             text.push_str(&if skipped == 1 { " · 1 episode or local file skipped".to_string() } else { format!(" · {skipped} episodes or local files skipped") });
+        }
+        if local_playlist {
+            text.push_str(" · it's in Local Files › Playlists");
         }
         self.toast(text);
         self.rescan_if_in_local_files(&folder);
@@ -1349,6 +1394,12 @@ impl App {
         self.local_links.clear();
         if let Ok(mut lib) = self.share_library.write() {
             *lib = t.clone();
+        }
+        // Songs got from a device are here now: they can't be picked any more.
+        if let Some(d) = self.device.as_mut() {
+            d.mark_here(&t);
+            let here: HashSet<&str> = d.list().filter(|(_, here)| *here).map(|(f, _)| f.id.as_str()).collect();
+            self.device_picks.retain(|id| !here.contains(id.as_str()));
         }
         self.local_tracks = Some(t);
     }
@@ -1575,13 +1626,13 @@ impl App {
     }
 
     /// Starts or stops local files sharing to match the setting, once Glass
-    /// is signed in and its player is connected (its device ID is part of the
-    /// proof of being yours; a new computer also confirms a six-digit code).
+    /// is signed in (the account is what proves a device is yours).
     fn keep_sharing(&mut self) {
-        let want = self.settings.share_local_files && !crate::window_fx::headless() && !crate::demo::active();
+        let want = self.settings.share_local_files && !crate::window_fx::headless() && (!crate::demo::active() || crate::demo::share_folder().is_some());
         if !want {
             if self.share.take().is_some() {
                 self.share_peers.clear();
+                self.share_others.clear();
             }
             self.share_failed = false;
             return;
@@ -1589,26 +1640,15 @@ impl App {
         if self.share.is_some() || self.share_failed {
             return;
         }
-        let (Some(api), Some(engine), Some(me)) = (self.api.clone(), self.engine.as_ref(), self.me.as_ref()) else { return };
+        let Some(me) = self.me.as_ref() else { return };
         let username = s(me, "id");
         if username.is_empty() {
             return;
         }
         let instance = model::random_hex(12);
-        let who = crate::share::Me { instance, name: crate::share::computer_name(), username: username.to_string(), device_id: engine.device_id.clone() };
-        let devices: crate::share::Devices = Arc::new(move || {
-            let api = api.clone();
-            // Only computers: speakers and TVs share their IDs with anyone on the network.
-            Box::pin(async move {
-                api.get("/me/player/devices")
-                    .await
-                    .ok()
-                    .and_then(|v| v["devices"].as_array().map(|d| d.iter().filter(|x| s(x, "type") == "Computer").map(|x| s(x, "id").to_string()).collect()))
-                    .unwrap_or_default()
-            })
-        });
+        let who = crate::share::Me { instance, name: crate::share::computer_name(), account: crate::share::account_secret(username, s(me, "email")), username: username.to_string() };
         let (tx, ctx) = (self.tx.clone(), self.ctx.clone());
-        match crate::share::Share::start(self.rt.handle().clone(), who, devices, self.share_library.clone(), crate::share::inbox(), move |e| {
+        match crate::share::Share::start(self.rt.handle().clone(), who, self.share_library.clone(), crate::share::inbox(), move |e| {
             let _ = tx.send(Msg::Share(e));
             ctx.request_repaint();
         }) {
@@ -1620,25 +1660,18 @@ impl App {
         }
     }
 
-    /// The computers paired for sharing (none while sharing is off).
-    pub fn paired_computers(&self) -> Vec<crate::share::Paired> {
-        self.share.as_ref().map(|s| s.paired()).unwrap_or_default()
-    }
-
     fn share_event(&mut self, e: crate::share::Event) {
         use crate::share::{Event, State};
         match e {
-            Event::Peers(p) => self.share_peers = p,
-            Event::Pair { id, name, code, incoming } => {
-                // Glass may be in the background; the dialog needs to be seen.
-                self.ctx.send_viewport_cmd(egui::ViewportCommand::RequestUserAttention(egui::UserAttentionType::Informational));
-                self.pairing = Some(Pairing { id, name, code, incoming });
-            }
-            Event::PairDone { id } => {
-                if self.pairing.as_ref().is_some_and(|p| p.id == id) {
-                    self.pairing = None;
+            Event::Peers(p) => (self.share_peers, self.share_others) = p.into_iter().partition(|p| p.ready()),
+            Event::Library { peer, songs } => {
+                let mine = self.local_tracks.clone().unwrap_or_default();
+                if let Some(d) = self.device.as_mut() {
+                    d.answered(&peer, songs, &mine);
                 }
             }
+            // iOS only (the desktop finds devices on its own sockets).
+            Event::NoLocalNetwork => {}
             Event::Transfer(t) => {
                 if let State::Failed(why) = &t.state {
                     self.toast(format!("Couldn't {} {}: {why}", if t.sending { "send to" } else { "receive from" }, t.peer));
@@ -2089,6 +2122,10 @@ impl App {
 
     /// Plays `p.body`, or does once the engine is ready.
     fn start_play(&mut self, p: PendingPlay) {
+        if !self.is_premium() {
+            self.needs_premium(p.quiet);
+            return;
+        }
         self.dj_cancel();
         self.stop_local();
         self.pb.is_playing = true;
@@ -2267,6 +2304,10 @@ impl App {
                 self.play_local_list(tracks, index);
             }
             Action::Radio(uri) => {
+                if !self.is_premium() {
+                    self.needs_premium(false);
+                    return;
+                }
                 self.stop_local();
                 let radio_ok = self.is_local() && self.engine.as_ref().map(|e| e.load_radio(&uri).is_ok()).unwrap_or(false);
                 if radio_ok {
@@ -2616,6 +2657,7 @@ impl App {
             Action::RestartEngine => {
                 self.engine = None;
                 self.engine_retry = None;
+                self.engine_launching = false;
                 self.start_engine();
             }
             Action::RescanLocal => {
@@ -2868,20 +2910,9 @@ impl App {
                     Err(e) => self.toast(format!("Couldn't update: {e}")),
                 }
             }
-            Action::SharePair { id, yes } => {
-                self.pairing = None;
-                if let Some(s) = &self.share {
-                    s.answer(id, yes);
-                }
-            }
-            Action::ShareForget(key) => {
-                if let Some(s) = &self.share {
-                    s.forget(&key);
-                }
-            }
             Action::SendToDevice { peer, paths } => {
                 let (Some(share), Some(p)) = (self.share.as_ref(), self.share_peers.iter().find(|p| p.id == peer).cloned()) else {
-                    self.toast("That computer isn't on this network any more");
+                    self.toast("That device isn't on this network any more");
                     return;
                 };
                 let all = self.local_tracks.as_deref().map(Vec::as_slice).unwrap_or_default();
@@ -2891,13 +2922,46 @@ impl App {
                 share.send(p.clone(), tracks);
                 self.toast(if n == 1 { format!("Sending to {}…", p.name) } else { format!("Sending {n} songs to {}…", p.name) });
             }
+            Action::BrowseDevice(peer) => {
+                self.device_picks.clear();
+                let Some(p) = self.share_peers.iter().find(|p| p.id == peer).cloned() else {
+                    let name = self.device.as_ref().filter(|d| d.peer == peer).map_or_else(|| "That device".to_string(), |d| d.name.clone());
+                    self.device = Some(crate::share::Browsed {
+                        peer,
+                        name,
+                        songs: Some(Err("It isn't on this network any more. Open Glass on it, on the same Wi-Fi as this computer.".into())),
+                        here: Vec::new(),
+                    });
+                    return;
+                };
+                self.device = Some(crate::share::Browsed::new(&p));
+                if let Some(share) = self.share.as_ref() {
+                    share.browse(p);
+                } else if crate::demo::active() {
+                    self.share_event(crate::share::Event::Library { peer: p.id, songs: Ok(crate::demo::device_songs()) });
+                }
+            }
+            Action::GetFromDevice { peer, ids } => {
+                let Some(p) = self.share_peers.iter().find(|p| p.id == peer).cloned() else {
+                    self.toast("That device isn't on this network any more");
+                    return;
+                };
+                let n = ids.len();
+                match self.share.as_ref() {
+                    Some(share) => share.get(p.clone(), ids),
+                    None if crate::demo::active() => {}
+                    None => return self.toast("Turn on sharing with your other devices in Settings"),
+                }
+                self.device_picks.clear();
+                self.toast(if n == 1 { format!("Getting a song from {}…", p.name) } else { format!("Getting {n} songs from {}…", p.name) });
+            }
             Action::GetFromDevices(uris) => match self.share.as_ref() {
                 Some(share) if !self.share_peers.is_empty() => {
                     let n = uris.len();
                     share.fetch(uris);
-                    self.toast(if n == 1 { "Getting it from your other computers…".to_string() } else { format!("Getting {n} songs from your other computers…") });
+                    self.toast(if n == 1 { "Getting it from your other devices…".to_string() } else { format!("Getting {n} songs from your other devices…") });
                 }
-                _ => self.toast("None of your other computers with Glass are on this network"),
+                _ => self.toast("None of your other devices with Glass are on this network"),
             },
             Action::AddFiles { paths, target } => {
                 let (tx, ctx) = (self.tx.clone(), self.ctx.clone());
@@ -2925,6 +2989,8 @@ impl App {
                 auth::forget_session();
                 self.share = None;
                 self.share_peers.clear();
+                self.share_others.clear();
+                self.device = None;
                 self.engine = None;
                 self.api = None;
                 self.me = None;
@@ -2947,6 +3013,8 @@ impl App {
                 self.fwd.clear();
                 self.dj_voice = None;
                 self.engine_retry = None;
+                self.engine_launching = false;
+                self.engine_status = "Not started".into();
                 self.auth_state = AuthState::SignedOut;
             }
         }
@@ -3012,6 +3080,10 @@ impl App {
     }
 
     fn download(&mut self, uri: String, name: String) {
+        if !self.is_premium() {
+            self.toast("Downloading to play offline needs Spotify Premium. Share ▸ Download as M4A or MP3 keeps a copy without it.");
+            return;
+        }
         let Some(api) = self.api.clone() else { return };
         let d = self.downloads.clone();
         let tx = self.tx.clone();
@@ -3147,6 +3219,14 @@ impl App {
 
     fn start_engine(&mut self) {
         let Some(api) = self.api.clone() else { return };
+        if !self.is_premium() {
+            self.engine_status = NEEDS_PREMIUM.into();
+            return;
+        }
+        if self.engine_launching {
+            return;
+        }
+        self.engine_launching = true;
         self.engine_status = "Connecting…".into();
         let settings = self.settings.clone();
         let dsp = self.dsp.clone();
@@ -3501,12 +3581,13 @@ impl App {
                 let ctx = self.ctx.clone();
                 let api = self.api.clone().unwrap();
                 let generation = self.data_gen;
+                // The engine starts once this says what kind of account it is
+                // (`account_known`): Spotify streams only to Premium accounts.
                 self.rt.spawn(async move {
                     let r = api.get("/me").await.map(Arc::new).map_err(|e| e.to_string());
                     let _ = tx.send(Msg::Data { key: "/me".into(), result: r, generation });
                     ctx.request_repaint();
                 });
-                self.start_engine();
             }
             Msg::SignedIn(g, Err(e)) => {
                 // Spotify turning the saved session down means signing in again. Anything else
@@ -3529,7 +3610,11 @@ impl App {
                 match result {
                     Ok(v) => {
                         if key == "/me" {
+                            let first = self.me.is_none();
                             self.me = Some((*v).clone());
+                            if first {
+                                self.account_known();
+                            }
                         }
                         if key.starts_with("ALL") {
                             self.sync_download(&key, &v);
@@ -3547,6 +3632,11 @@ impl App {
                         self.fetched_at.insert(key, Instant::now());
                     }
                     Err(e) => {
+                        // Not known what kind of account this is: start as before (a free
+                        // account's engine is let go once it is).
+                        if key == "/me" && self.me.is_none() {
+                            self.start_engine();
+                        }
                         self.fetched_at.insert(key.clone(), Instant::now());
                         self.data.insert(key, Load::Failed(e));
                     }
@@ -3590,7 +3680,12 @@ impl App {
                     self.saved.insert(u, b);
                 }
             }
+            Msg::EngineReady(Ok(_)) if !self.is_premium() => {
+                self.engine_launching = false;
+                self.engine_status = NEEDS_PREMIUM.into();
+            }
             Msg::EngineReady(Ok(engine)) => {
+                self.engine_launching = false;
                 self.engine_retry = None;
                 self.engine_status = format!("Ready · this computer appears as “{}”", self.settings.device_name);
                 let ctx = self.ctx.clone();
@@ -3607,6 +3702,7 @@ impl App {
                 }
             }
             Msg::EngineReady(Err(e)) => {
+                self.engine_launching = false;
                 // The assistant said it would play once the player was ready: say it didn't.
                 if let Some(p) = self.pending_play.take() {
                     // It isn't going to play: the button stops showing that it is.
@@ -3643,7 +3739,7 @@ impl App {
             }
             Msg::Failed(e) => {
                 let short = if e.contains("403") && e.contains("player") {
-                    "Spotify refused the playback command (Premium is required to control playback)".to_string()
+                    "Controlling playback needs Spotify Premium".to_string()
                 } else if e.contains("404") && e.contains("player") {
                     "No active device — pick one in the device panel".to_string()
                 } else {
@@ -3851,6 +3947,8 @@ impl App {
                 self.dj_break(uri, say, ready, hold);
                 return;
             }
+            // The desktop's queue comes from Spotify's Web API.
+            EngineEvent::Upcoming(_) => return,
             _ => {}
         }
         if self.is_local() && !matches!(ev, EngineEvent::Volume(_)) {
@@ -3903,7 +4001,7 @@ impl App {
             // The next song announces itself; a stop may mean another device took over.
             EngineEvent::EndOfTrack => {}
             EngineEvent::Stopped => self.poll_soon(),
-            EngineEvent::Unavailable | EngineEvent::SessionLost | EngineEvent::Dj { .. } => {}
+            EngineEvent::Unavailable | EngineEvent::SessionLost | EngineEvent::Dj { .. } | EngineEvent::Upcoming(_) => {}
             EngineEvent::Volume(v) => {
                 if !self.pb.volume_dragging {
                     self.pb.volume = v as f32 / u16::MAX as f32;

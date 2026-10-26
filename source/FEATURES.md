@@ -156,7 +156,7 @@ unavailable instead of hiding them.
 | Private session, listening activity, show follows/recent artists | ✖ | Private APIs. |
 | Account: details, log out, edit login methods | ✅ | Edit opens spotify.com. |
 | Settings search | ✅ | |
-| Ads, upsells, "Install app" | — | Removed on purpose. Premium is required. |
+| Ads, upsells, "Install app" | — | Removed on purpose. Playing Spotify's songs needs Premium; a free account browses, plays Local Files and saves songs. |
 
 ## Added beyond Spotify
 
@@ -167,7 +167,7 @@ unavailable instead of hiding them.
 | Automatic updates | ✅ | The Mac app downloads new versions in the background and installs them on quit (or now, from the top bar); only updates signed with the release key are installed. |
 | Spotify DJ (X) | ✅ | Plays the DJ's mix page after page (librespot couldn't: the DJ resolves to an empty context plus a session link). X's lines are spoken in X's voice before songs, as in Spotify's apps, and shown in the player bar; pause works on X too, and the voice can be turned off. DJ card on Home, `dj` in ⌘K; other Spotify apps can start the DJ on Glass. |
 | Local Files tab | ✅ | Its own tab in the side rail, organized like iTunes: Albums (a grid of covers; an album lists its songs in track order, by disc), Songs (a table sorted by artist, album and track, or by any column header), Artists (beside their albums), Genres, Recently Added and Playlists. Each file is listed once, however the source folders overlap. |
-| Sending local files between your Glass devices | ✅ | Glass on your other computers, on the same network and signed in to the same account, shows up in Local Files. Right-click songs → Send to; a playlist's missing local songs come from whichever device has them (right-click, or the playlist's ⋯ menu). Encrypted, and each device proves it's on your account; received songs go to Music/Glass, which joins Local Files. |
+| Local files between your Glass devices | ✅ | Glass on your other devices (Mac, Linux, iPhone), on the same network and signed in to the same account, shows up in Local Files by itself, with no code. Click one to see its songs and get the ones you pick; right-click songs → Send to; a playlist's missing local songs come from whichever device has them (right-click, or the playlist's ⋯ menu). A Glass that needs updating to share says so. Encrypted, and each device proves it's on your account; received songs go to Music/Glass, which joins Local Files. |
 
 ## Added for transparency
 
