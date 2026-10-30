@@ -10,7 +10,7 @@ macOS 12 or later, Apple silicon or Intel. Playback needs Spotify Premium.
 **[Get Glass for iPhone](https://github.com/davishann15-commits/glass-releases/releases/tag/ios-v1.0.0-beta.23)** (new)<br>
 iOS 26 or later, iPhone and iPad, installed with SideStore, AltStore, Sideloadly or TrollStore.
 
-**[Get Glass for Arch Linux](https://github.com/davishann15-commits/glass-releases/releases/tag/arch-v1.0.0-beta.22)** (new)<br>
+**[Get Glass for Arch Linux](https://github.com/davishann15-commits/glass-releases/releases/tag/arch-v1.0.0-beta.23)** (new)<br>
 A pacman package for x86_64, Wayland or X11; the PKGBUILD builds it anywhere else.
 
 **[Browse the source](source/)** · **[Build from source](#build-from-source)** · **[Developer guide](source/README.md)** · **[Glass for iPhone](#glass-for-iphone)** · **[Arch Linux](#install-on-arch-linux)**
@@ -53,12 +53,12 @@ turns this off.
 ### Install on Arch Linux
 
 Download the package from the
-[Arch Linux release](https://github.com/davishann15-commits/glass-releases/releases/tag/arch-v1.0.0-beta.22)
+[Arch Linux release](https://github.com/davishann15-commits/glass-releases/releases/tag/arch-v1.0.0-beta.23)
 and install it with pacman:
 
 ```sh
-curl -LO https://github.com/davishann15-commits/glass-releases/releases/download/arch-v1.0.0-beta.22/glass-1.0.0beta22-1-x86_64.pkg.tar.zst
-sudo pacman -U glass-1.0.0beta22-1-x86_64.pkg.tar.zst
+curl -LO https://github.com/davishann15-commits/glass-releases/releases/download/arch-v1.0.0-beta.23/glass-1.0.0beta23-1-x86_64.pkg.tar.zst
+sudo pacman -U glass-1.0.0beta23-1-x86_64.pkg.tar.zst
 ```
 
 Or put the release's `PKGBUILD` in an empty folder and run `makepkg -si` there
@@ -465,8 +465,8 @@ open-source Spotify player that only works with Premium accounts.
 **Why does macOS say it can't check Glass for malware?** Glass isn't notarized
 by Apple. Step 2 of [Install](#install) gets past it.
 
-**Is there a Windows version?** No. There's an Arch Linux build, but it isn't
-published here.
+**Is there a Windows version?** No. There's an
+[Arch Linux build](#install-on-arch-linux).
 
 ---
 
