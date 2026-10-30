@@ -52,48 +52,98 @@ pub struct PickedFolder {
 /// Events from the core, in the order they happened.
 #[derive(uniffi::Enum, Clone, Debug)]
 pub enum CoreEvent {
-    Account { account: AccountModel },
-    Playback { playback: PlaybackModel },
-    Queue { queue: QueueModel },
-    Devices { devices: DevicesModel },
-    Library { library: LibraryModel },
+    Account {
+        account: AccountModel,
+    },
+    Playback {
+        playback: PlaybackModel,
+    },
+    Queue {
+        queue: QueueModel,
+    },
+    Devices {
+        devices: DevicesModel,
+    },
+    Library {
+        library: LibraryModel,
+    },
     /// A page Swift subscribed to (by `key`, see `route_key`) was built again.
-    Page { key: String, page: PageModel },
+    Page {
+        key: String,
+        page: PageModel,
+    },
     /// Saved/liked/followed flags that changed.
-    Saved { changes: Vec<SavedFlag> },
-    Toast { text: String },
+    Saved {
+        changes: Vec<SavedFlag>,
+    },
+    Toast {
+        text: String,
+    },
     /// Open this page (a playlist just created, say).
-    Navigate { route: Route },
+    Navigate {
+        route: Route,
+    },
     /// This page went away (deleted): leave it if it's open.
-    Left { route: Route },
+    Left {
+        route: Route,
+    },
     /// Open Now Playing (Settings: "Open the now-playing screen when playback starts").
     ShowNowPlaying,
     /// The assistant: conversation, previews, approvals, models, account.
-    Assistant { assistant: crate::assistant_app::AssistantModel },
+    Assistant {
+        assistant: crate::assistant_app::AssistantModel,
+    },
     /// The ChatGPT sign-in page, for the system's web sign-in sheet.
-    OpenAssistantSignIn { request: SignInRequest },
+    OpenAssistantSignIn {
+        request: SignInRequest,
+    },
     /// Sharing with Glass on your other devices: who's here, pairing, transfers.
-    Share { share: crate::share_app::ShareModel },
+    Share {
+        share: crate::share_app::ShareModel,
+    },
     /// Another device's Local Files, while they're on screen (see `share_browse`).
-    DeviceLibrary { library: crate::share_app::DeviceLibraryModel },
+    DeviceLibrary {
+        library: crate::share_app::DeviceLibraryModel,
+    },
     /// Add to Apple Music: the pairing file, a run's progress and its result.
-    AppleMusic { apple_music: crate::apple_music::AppleMusicModel },
+    AppleMusic {
+        apple_music: crate::apple_music::AppleMusicModel,
+    },
     /// Songs being saved as files, and collections being saved.
-    Saves { saves: crate::save_app::SavesModel },
+    Saves {
+        saves: crate::save_app::SavesModel,
+    },
     /// Local Files: the library, its sources and Glass's local playlists.
-    Local { local: crate::local_app::LocalModel },
+    Local {
+        local: crate::local_app::LocalModel,
+    },
     /// The tag editor's save finished (`error`: why not; the file is untouched then).
-    TagsSaved { path: String, error: Option<String> },
+    TagsSaved {
+        path: String,
+        error: Option<String>,
+    },
     /// settings.json, config.toml and the live notes beside them.
-    Settings { settings: crate::settings_app::SettingsModel, config: crate::settings_app::ConfigModel, status: crate::settings_app::StatusModel },
+    Settings {
+        settings: crate::settings_app::SettingsModel,
+        config: crate::settings_app::ConfigModel,
+        status: crate::settings_app::StatusModel,
+    },
     /// The playing album's colors (none: the theme's own; Settings ▸ Display).
-    AlbumColors { colors: Option<crate::colors_app::AlbumColorsModel> },
+    AlbumColors {
+        colors: Option<crate::colors_app::AlbumColorsModel>,
+    },
     /// theme.toml changed (or was edited), or its error/warnings did.
-    Theme { theme: crate::theme_app::ThemeModel },
+    Theme {
+        theme: crate::theme_app::ThemeModel,
+    },
     /// The lyrics for the playing song changed (looked up only while on screen).
-    Lyrics { lyrics: crate::lyrics_app::LyricsModel },
+    Lyrics {
+        lyrics: crate::lyrics_app::LyricsModel,
+    },
     /// Present Spotify's sign-in page in ASWebAuthenticationSession.
-    OpenSignIn { request: SignInRequest },
+    OpenSignIn {
+        request: SignInRequest,
+    },
     SignedOut,
 }
 
@@ -553,6 +603,20 @@ impl GlassCore {
         self.act(Action::AiEditDraft { draft, edit });
     }
 
+    /// ▶ on a recommendation: its 30-second preview; again stops it.
+    pub fn ai_preview(&self, uri: String) {
+        self.act(Action::AiPreview(uri));
+    }
+
+    /// "+ add" on a recommendation card (`uri` nil: "add all") to a playlist (bare ID).
+    pub fn ai_add_picks(&self, card: String, uri: Option<String>, playlist: String) {
+        self.act(Action::AiAddPicks { card, uri, playlist });
+    }
+
+    pub fn ai_dismiss_picks(&self, card: String) {
+        self.act(Action::AiDismissPicks(card));
+    }
+
     pub fn ai_undo(&self) {
         self.act(Action::AiUndo);
     }
@@ -730,9 +794,24 @@ impl GlassCore {
         self.lyrics(LyricsAction::ClosePicker);
     }
 
-    /// "auto", "lrclib" or "spotify" (config.toml `lyrics.provider`).
+    /// "auto", "lrclib", "spotify" or a word timing service (config.toml `lyrics.provider`).
     pub fn set_lyrics_provider(&self, provider: String) {
         self.lyrics(LyricsAction::Provider(provider));
+    }
+
+    /// The word timing services asked in auto, in order ("lrcred", "qobuzify",
+    /// "unison", "netease", "lrcmux", "spicy", "musixmatch"; config.toml `lyrics.sources`).
+    pub fn set_lyrics_sources(&self, sources: Vec<String>) {
+        self.lyrics(LyricsAction::Sources(sources));
+    }
+
+    /// Keeps the user's key for "spicy" or "musixmatch" in the Keychain.
+    pub fn save_lyrics_key(&self, provider: String, key: String) {
+        self.lyrics(LyricsAction::Key { provider, key: Some(key) });
+    }
+
+    pub fn remove_lyrics_key(&self, provider: String) {
+        self.lyrics(LyricsAction::Key { provider, key: None });
     }
 
     pub fn set_lyrics_fallback(&self, on: bool) {

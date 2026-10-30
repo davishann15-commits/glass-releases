@@ -1257,8 +1257,6 @@ dependencies = [
 [[package]]
 name = "eframe"
 version = "0.36.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "55ad41fac6e3149abb4866e93df37dbd33baa95db525c3368c944584e95a5dc2"
 dependencies = [
  "ahash",
  "bytemuck",
@@ -1877,6 +1875,7 @@ dependencies = [
  "objc2-foundation 0.3.2",
  "open",
  "protobuf",
+ "quick-xml 0.38.4",
  "rand 0.8.8",
  "raw-window-handle",
  "reqwest",

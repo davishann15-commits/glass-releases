@@ -103,7 +103,7 @@ impl MobileApp {
         let model = if self.settings.album_colors { self.color_source().and_then(|url| self.album.palettes.get(&url).copied().flatten().map(|p| (url, p))) } else { None };
         let model = model.map(|(url, p)| {
             let mut t = self.theme.theme().clone();
-            p.apply(&mut t, 1.0);
+            p.apply(&mut t, 1.0, Default::default());
             let base = p.wash[0].lerp(p.wash[1], 0.5).with(((p.wash[0].l + p.wash[1].l) / 2.0) * 0.8, 0.06);
             AlbumColorsModel {
                 cover: url,

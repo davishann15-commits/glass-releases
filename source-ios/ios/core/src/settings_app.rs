@@ -5,7 +5,7 @@
 
 use crate::app::{MobileApp, Msg};
 use crate::bridge::CoreEvent;
-use crate::config::{Folder, Loudness, LocalView, Quality, Settings};
+use crate::config::{Folder, LocalView, Loudness, Quality, Settings};
 
 #[derive(uniffi::Enum, Clone, Copy, PartialEq, Eq, Debug)]
 pub enum StreamingQuality {
@@ -83,6 +83,10 @@ pub struct SettingsModel {
 pub struct ConfigModel {
     pub lyrics_provider: String,
     pub lyrics_fallback: bool,
+    /// The word timing services asked in auto, in order ("lrcred"…).
+    pub lyrics_sources: Vec<String>,
+    /// The services the user saved a key for ("spicy", "musixmatch").
+    pub lyrics_keys: Vec<String>,
     pub lyrics_offset_ms: i64,
     pub lyrics_contact: String,
     pub translation: String,
@@ -239,7 +243,8 @@ pub fn apply_model(base: &Settings, m: SettingsModel) -> Settings {
         SaveFormat::Mp3 => crate::save_song::Format::Mp3,
     };
     s.save_mp3_kbps = if crate::save_song::BITRATES.contains(&m.save_mp3_kbps) { m.save_mp3_kbps } else { 320 };
-    s.save_dir = m.save_dir.filter(|d| !d.is_empty()).map(Into::into);
+    // A folder picked in Files comes as /private/var/…; Local Files reads Glass's as /var/….
+    s.save_dir = m.save_dir.filter(|d| !d.is_empty()).map(|d| crate::paths::one_spelling(d.as_ref()));
     s.now_playing_on_play = m.now_playing_on_play;
     s.track_notifications = m.track_notifications;
     s.album_colors = m.album_colors;
@@ -274,6 +279,8 @@ impl MobileApp {
         ConfigModel {
             lyrics_provider: c.provider.name().into(),
             lyrics_fallback: c.fallback,
+            lyrics_sources: c.sources.iter().map(|p| p.key().to_string()).collect(),
+            lyrics_keys: [crate::lyrics::ProviderId::Spicy, crate::lyrics::ProviderId::Musixmatch].into_iter().filter(|&p| self.lyrics.sources.key(p).is_some()).map(|p| p.key().to_string()).collect(),
             lyrics_offset_ms: c.offset_ms,
             lyrics_contact: c.contact.clone(),
             translation: c.translation.name().into(),

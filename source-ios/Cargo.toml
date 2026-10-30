@@ -39,6 +39,8 @@ env_logger = { version = "0.11", default-features = false }
 anyhow = "1"
 toml_edit = "0.25"
 serde-saphyr = { version = "2", default-features = false, features = ["deserialize"] }
+# TTML lyrics (lrc.red, Unison). Already linked through librespot-core.
+quick-xml = { version = "0.38", default-features = false }
 memmap2 = "0.9"
 # Verifying the assistant's sign-in (ID tokens from a JWK set; no PEM).
 jsonwebtoken = { version = "9", default-features = false }
@@ -167,3 +169,5 @@ librespot-connect = { path = "vendor/librespot-connect" }
 librespot-core = { path = "vendor/librespot-core" }
 # epaint with a narrower font atlas (see vendor/epaint/GLASS.md).
 epaint = { path = "vendor/epaint" }
+# eframe that doesn't block while its window is hidden on Wayland (see vendor/eframe/GLASS.md).
+eframe = { path = "vendor/eframe" }

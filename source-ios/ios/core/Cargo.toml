@@ -42,6 +42,8 @@ anyhow = "1"
 thiserror = "2"
 toml_edit = "0.25"
 serde-saphyr = { version = "2", default-features = false, features = ["deserialize"] }
+# TTML lyrics (lrc.red, Unison). Already linked through librespot-core.
+quick-xml = { version = "0.38", default-features = false }
 memmap2 = "0.9"
 jsonwebtoken = { version = "9", default-features = false }
 # iOS Keychain (keyring's apple-native store is the iOS Keychain on iOS).

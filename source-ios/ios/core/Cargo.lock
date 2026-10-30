@@ -1235,6 +1235,7 @@ dependencies = [
  "memmap2",
  "open",
  "protobuf",
+ "quick-xml 0.38.4",
  "rand 0.8.8",
  "reqwest",
  "rodio",

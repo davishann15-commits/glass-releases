@@ -131,6 +131,12 @@ pub struct LyricsStyle {
     pub speed: f32,
     /// The current line in bold.
     pub bold: bool,
+    /// With word timing: how much earlier (ms; negative: later) words light up
+    /// than they're sung. The lines keep their time.
+    pub word_lead: i32,
+    /// With word timing: how long (ms) a sung word stays bright before it
+    /// settles into the line's color.
+    pub word_glow: u32,
 }
 
 /// The audio visualizer under the lyrics (`[visualizer]`).
@@ -213,6 +219,8 @@ const KEYS: &[(&str, Kind)] = &[
     ("lyrics.animation", Kind::Choice(LYRICS_ANIMATION)),
     ("lyrics.speed", Kind::Number(0.25, 3.0)),
     ("lyrics.bold", Kind::Bool),
+    ("lyrics.word_lead", Kind::Int(-500, 500)),
+    ("lyrics.word_glow", Kind::Int(0, 2000)),
     ("visualizer.style", Kind::Choice(VIZ_STYLE)),
     ("visualizer.color", Kind::Color),
     ("visualizer.color2", Kind::Color),
@@ -396,6 +404,8 @@ impl Theme {
             animation: choice("lyrics.animation", "glide", &mut errors),
             speed: num("lyrics.speed", 0.75, &mut errors) as f32,
             bold: flag("lyrics.bold", true, &mut errors),
+            word_lead: num("lyrics.word_lead", 0.0, &mut errors) as i32,
+            word_glow: num("lyrics.word_glow", 400.0, &mut errors) as u32,
         };
         let viz = VizStyle {
             style: choice("visualizer.style", "mirror", &mut errors),
@@ -942,8 +952,11 @@ mod tests {
         assert!(w.is_empty(), "{w:?}");
         assert_eq!((t.lyrics.align.as_str(), t.lyrics.size, t.lyrics.bold, t.lyrics.current.hex()), ("center", 1.4, false, "#FFFFFF".to_string()));
         assert_eq!((t.viz.style.as_str(), t.viz.bars, t.viz.glow), ("wave", 64, false));
-        let e = parse("[lyrics]\nalign = \"diagonal\"\nanimation = 3\n[visualizer]\nbars = 2\nglow = \"yes\"", false).unwrap_err();
-        for key in ["lyrics.align", "lyrics.animation", "visualizer.bars", "visualizer.glow"] {
+        assert_eq!((d.lyrics.word_lead, d.lyrics.word_glow), (0, 400), "words light as they're sung and glow 0.4 s");
+        let (t, _) = parse("[lyrics]\nword_lead = -150\nword_glow = 1200", false).unwrap();
+        assert_eq!((t.lyrics.word_lead, t.lyrics.word_glow), (-150, 1200));
+        let e = parse("[lyrics]\nalign = \"diagonal\"\nanimation = 3\nword_lead = 900\nword_glow = 0.5\n[visualizer]\nbars = 2\nglow = \"yes\"", false).unwrap_err();
+        for key in ["lyrics.align", "lyrics.animation", "lyrics.word_lead", "lyrics.word_glow", "visualizer.bars", "visualizer.glow"] {
             assert!(e.contains(key), "{key} in {e}");
         }
     }

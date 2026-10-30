@@ -977,7 +977,8 @@ impl MobileApp {
         let mut total = 0;
         let mut missing = 0;
         for path in &pl.tracks {
-            match by_path.get(path.as_path()) {
+            // Local Files' paths are in `paths::one_spelling`; a song kept in the other is the same file.
+            match by_path.get(path.as_path()).or_else(|| by_path.get(crate::paths::one_spelling(path).as_path())) {
                 Some(t) => {
                     total += t.duration_ms;
                     rows.push(local_row(t));

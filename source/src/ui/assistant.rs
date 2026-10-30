@@ -249,6 +249,107 @@ fn draft_card(app: &mut App, ui: &mut Ui, d: &tools::Draft) {
     });
 }
 
+/// Recommendations: ▶ plays a song's 30-second preview (what's playing
+/// pauses for it), "+ add" puts it in the playlist they're for, or one picked
+/// from a menu; "add all" adds the rest.
+fn picks_card(app: &mut App, ui: &mut Ui, p: &tools::Picks) {
+    let target = p.for_playlist.as_ref().map(|id| (id.clone(), app.ai_playlist_name(id)));
+    let preview = app.ai_preview.as_ref().map(|x| (x.uri.clone(), x.voice.is_some(), x.elapsed()));
+    egui::Frame::NONE.stroke(Stroke::new(1.0, col::border())).corner_radius(theme::small_radius()).inner_margin(Margin::same(sp(1.25) as i8)).show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        ui.horizontal(|ui| {
+            ui.label(RichText::new("recommendations").font(theme::regular(11.0)).color(col::muted()));
+            ui.label(RichText::new(&p.title).font(theme::regular(14.5)).color(col::text()));
+        });
+        let meta = match &target {
+            Some((_, name)) => format!("{} for “{name}”, none already in it · ▶ plays 30 seconds", crate::model::songs(p.songs.len() as u64)),
+            None => format!("{} · ▶ plays 30 seconds, + adds to a playlist", crate::model::songs(p.songs.len() as u64)),
+        };
+        small(ui, meta, col::sub());
+        ui.add_space(sp(0.5));
+        for song in &p.songs {
+            let Some(it) = app.ai.catalog.get(&song.uri) else { continue };
+            let label = format!("{} — {}", it.name, it.by);
+            let (row, resp) = ui.allocate_exact_size(vec2(ui.available_width(), px(24.0)), Sense::hover());
+            resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, label.clone()));
+            let y = row.center().y;
+            // ▶ / … / ■
+            let mine = preview.as_ref().filter(|(u, ..)| *u == song.uri);
+            let (icon, tip) = match mine {
+                None => ("▶", "Play a 30-second preview"),
+                Some((_, false, _)) => ("…", "Loading the preview"),
+                Some((_, true, _)) => ("■", "Stop the preview"),
+            };
+            let play = egui::Rect::from_min_size(row.min, vec2(px(20.0), row.height()));
+            let b = ui.interact(play, resp.id.with("preview"), Sense::click());
+            b.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("{tip}: {}", it.name)));
+            ui.painter().text(play.center(), egui::Align2::CENTER_CENTER, icon, theme::regular(12.0), if b.hovered() || mine.is_some() { col::accent() } else { col::sub() });
+            if b.on_hover_text(tip).clicked() {
+                app.act(Action::AiPreview(song.uri.clone()));
+            }
+            // "+ add" (or where it went), then the length (or the preview's time left).
+            let add_w = px(78.0);
+            let add = egui::Rect::from_min_max(egui::pos2(row.right() - add_w, row.top()), row.max);
+            let time = match mine {
+                Some((_, true, t)) => format!("0:{:02}", 30u64.saturating_sub(t.as_secs())),
+                _ => crate::model::fmt_ms(it.duration_ms),
+            };
+            ui.painter().text(egui::pos2(add.left() - px(6.0), y), egui::Align2::RIGHT_CENTER, time, theme::regular(11.0), if mine.is_some() { col::accent() } else { col::sub() });
+            widgets::text_trunc(ui, egui::pos2(play.right() + px(4.0), y), &label, theme::regular(12.0), col::text(), add.left() - play.right() - px(48.0));
+            ui.scope_builder(egui::UiBuilder::new().max_rect(add).layout(Layout::right_to_left(Align::Center)), |ui| {
+                let added = |id: &str| song.added_to.iter().any(|x| x == id);
+                match &target {
+                    Some((id, name)) if added(id) => {
+                        ui.label(RichText::new("added ✓").font(theme::regular(11.5)).color(col::accent())).on_hover_text(format!("In “{name}”"));
+                    }
+                    Some((id, name)) => {
+                        if widgets::link(ui, "+ add", theme::regular(11.5), col::sub()).on_hover_text(format!("Add to “{name}”")).clicked() {
+                            app.act(Action::AiAddPicks { card: p.id.clone(), uri: Some(song.uri.clone()), playlist: id.clone() });
+                        }
+                    }
+                    None => {
+                        let text = if song.added_to.is_empty() { "+ add" } else { "added ✓" };
+                        ui.menu_button(RichText::new(text).font(theme::regular(11.5)).color(if song.added_to.is_empty() { col::sub() } else { col::accent() }), |ui| {
+                            ui.set_min_width(px(200.0));
+                            egui::ScrollArea::vertical().max_height(px(320.0)).show(ui, |ui| {
+                                for pl in super::menus::writable_playlists(app) {
+                                    let id = crate::model::s(&pl, "id").to_string();
+                                    let name = crate::model::s(&pl, "name").to_string();
+                                    let shown = if added(&id) { format!("{name}  ✓") } else { name };
+                                    if widgets::menu_item(ui, &shown) && !added(&id) {
+                                        app.act(Action::AiAddPicks { card: p.id.clone(), uri: Some(song.uri.clone()), playlist: id });
+                                    }
+                                }
+                            });
+                        });
+                    }
+                }
+            });
+            if !song.why.is_empty() {
+                ui.horizontal_top(|ui| {
+                    ui.add_space(px(24.0));
+                    small(ui, &song.why, col::muted());
+                });
+            }
+        }
+        ui.add_space(sp(0.75));
+        ui.horizontal_wrapped(|ui| {
+            if let Some((id, name)) = &target {
+                let left = p.songs.iter().filter(|x| !x.added_to.contains(id)).count();
+                if left > 1 && widgets::bracket_button(ui, None, &format!("add all to “{}”", name.chars().take(18).collect::<String>()), true).clicked() {
+                    app.act(Action::AiAddPicks { card: p.id.clone(), uri: None, playlist: id.clone() });
+                }
+            }
+            if widgets::bracket_button(ui, None, "dismiss", false).clicked() {
+                app.act(Action::AiDismissPicks(p.id.clone()));
+            }
+        });
+    });
+    if preview.is_some() {
+        ui.ctx().request_repaint_after(std::time::Duration::from_millis(250));
+    }
+}
+
 fn approval_card(app: &mut App, ui: &mut Ui, a: &tools::Approval) {
     let text = match &a.kind {
         ApprovalKind::QueueMany { ids, mode } => {
@@ -339,6 +440,13 @@ pub fn panel(app: &mut App, ui: &mut Ui) {
                 draft_card(app, ui, d);
             }
             app.ai.drafts = drafts;
+            // Recommendations last, the newest nearest the composer (the panel opens at the bottom).
+            let picks = std::mem::take(&mut app.ai.picks);
+            for p in &picks {
+                ui.add_space(sp(1.0));
+                picks_card(app, ui, p);
+            }
+            app.ai.picks = picks;
         });
         widgets::hairline(ui);
         ui.add_space(sp(0.5));

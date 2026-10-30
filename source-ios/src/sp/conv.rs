@@ -108,7 +108,27 @@ pub fn track(t: &metadata::Track) -> Value {
         "is_local": false, "is_playable": true,
         "artists": t.artist.iter().map(artist_ref).collect::<Vec<_>>(),
         "album": album_ref(&t.album),
+        // The recording's ISRC: lyrics are looked up by it.
+        "external_ids": external_ids(&t.external_id),
+        "preview_url": preview_url(t),
     })
+}
+
+/// The song's 30-second preview clip (an MP3 on Spotify's CDN), when it has
+/// one; a song relinked in the user's country has it on an alternative.
+fn preview_url(t: &metadata::Track) -> Option<String> {
+    let id = t.preview.iter().chain(t.alternative.iter().flat_map(|a| a.preview.iter())).find_map(|f| f.file_id.as_deref().filter(|id| !id.is_empty()))?;
+    Some(format!("https://p.scdn.co/mp3-preview/{}", id.iter().map(|b| format!("{b:02x}")).collect::<String>()))
+}
+
+fn external_ids(ids: &[metadata::ExternalId]) -> Value {
+    let mut out = serde_json::Map::new();
+    for e in ids {
+        if !e.type_().is_empty() && !e.id().is_empty() {
+            out.entry(e.type_().to_ascii_lowercase()).or_insert_with(|| json!(e.id()));
+        }
+    }
+    Value::Object(out)
 }
 
 /// A full album. `tracks` are the converted disc tracks, in order.

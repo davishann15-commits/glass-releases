@@ -71,7 +71,9 @@ and you return to Glass when it's done.
 - **Album colors** (Settings → Display, on by default): Now Playing takes its
   colors from the cover, a soft wash behind everything and the cover's
   most vivid color, brightened, as the accent. Songs change with a crossfade, and the new
-  colors bloom out from the artwork.
+  colors bloom out from the artwork. The theme panel's album tab (`⌘T` →
+  album) spreads them to every page, as on iPhone, and keeps your theme's
+  colors for any of the accent, lyrics, visualizer or background you untick.
 - **Command bar** (`⌘K`): search your library, run commands ("queue",
   "theme panel", "liked songs"…), or press Enter to search Spotify.
 - Keys (`space`, letter keys, `/` and `[ ]` don't fire while you're typing in a
@@ -239,18 +241,31 @@ shortcuts in the theme panel. Colors are `#RGB`, `#RRGGBB` or `#RRGGBBAA`.
 Lyrics come from [LRCLIB](https://lrclib.net), a free lyrics database
 maintained by its community, and — for Spotify songs LRCLIB doesn't have —
 from Spotify's own lyrics, read through Glass's Spotify connection
-(librespot's lyrics request). Glass looks them up only while they're on
-screen, once per song, and keeps LRCLIB's answers on this computer.
+(librespot's lyrics request). At the same time Glass asks word-by-word
+services — [lrc.red](https://lrc.red) (by ISRC: words and syllables, duets,
+backing vocals), [Qobuzify](https://api.qobuzify.app) (syllables for many
+Spanish and Japanese songs), [Unison](https://unison.boidu.dev) (Better Lyrics'
+community syncs), NetEase Cloud Music and [lrcmux](https://lrcmux.dev) (KuGou's
+word timing), plus [Spicy Lyrics](https://developers.spicylyrics.org) and
+[Musixmatch](https://developer.musixmatch.com) with your own key — and when
+one has the very recording (ISRC, or title, artist, version and length within
+3 s) and keeps time with the line-synced lyrics (the same lines within 1.5 s),
+its word timing replaces the line timing on screen without a jump. Each
+word is swept as it's sung (with Reduce Motion it brightens in place); lines
+of two voices that overlap are lit together, a duet's second voice sits on
+the other side and backing vocals under their line. Glass looks lyrics up only
+while they're on screen, once per song, and keeps the answers on this computer.
 
 ```toml
 [lyrics]
-provider  = "auto"   # "auto" (LRCLIB, then Spotify), "lrclib" or "spotify"
+provider  = "auto"   # "auto" (LRCLIB, then Spotify, + word timing), "lrclib", "spotify", or one service
 fallback  = true     # with "auto": try Spotify when LRCLIB has no match
+sources   = ["lrcred", "qobuzify", "unison", "netease", "lrcmux"]  # word timing, in order ("spicy", "musixmatch" with a key)
 translation  = "off"     # "off", "below" (original + translation) or "only"
 translate_to = "system"  # "system" or a language code like "en", "es", "ja"
 translator   = "auto"    # "auto", "apple" (macOS on-device) or "assistant"
 offset_ms = 0        # positive shows lyrics earlier (-10000…10000)
-contact   = ""       # optional homepage/email for LRCLIB's User-Agent
+contact   = ""       # optional homepage/email for the services' User-Agent
 ```
 
 [`config.example.toml`](config.example.toml) is the commented default. The
@@ -265,7 +280,12 @@ not the cache, so clearing the cache doesn't lose them):
 - **Your pick.** Lyrics you choose with "wrong lyrics?" (or "none of these")
   become that song's lyrics every time it plays — also when it plays from
   another album, playlist or release (matched by title, artist and length).
+  The word timing services are still asked: when one has the same lyrics,
+  keeping the same time, they're shown word by word (still your pick).
   "look again" goes back to automatic matching.
+- **Line by line.** "LRCLIB lines" under word-timed lyrics shows that song
+  with LRCLIB's lyrics (or your pick as it is) instead; "word timing" turns
+  it back.
 - **Timing.** `[` / `]` and the `− timing +` control under the lyrics shift
   only the song that's playing, and Glass remembers it for that song.
   `offset_ms` in config.toml is a general shift for every song (e.g. a
@@ -277,8 +297,9 @@ sung; size; alignment (left, center, right); where the current line sits
 (top, upper, middle); line spacing; how much far lines fade; the animation
 when a line changes (glide, fade, pop or none) and its speed; bold current
 line; and the typeface (`font.lyrics`). Lines glide into place and cross-fade;
-with word timing, each word brightens as it's sung. With Reduce Motion on,
-lines cross-fade instead.
+with word timing, each word brightens as it's sung — a little early or late
+if you like (`word_lead`, "words early"), staying bright for `word_glow` ms.
+With Reduce Motion on, lines cross-fade instead.
 
 **Visualizer** (`V`): bars, mirrored bars or a wave under the lyrics, in a
 gradient of your accent (or `[visualizer]` colors). It shows the audio played
@@ -378,6 +399,13 @@ even after an error.
   your playlists or Liked Songs (any release of the same song counts) and
   weren't played lately. Spotify doesn't share full play history, so the
   assistant says "probably new to you".
+- Recommendations ("recommend songs for my Night Drive playlist", "songs like
+  this album") come as a card: ▶ plays a song's 30-second preview (what's
+  playing pauses for it and comes back after), **+ add** puts it in the
+  playlist they're for or one you pick, and *add all* adds the rest. For a
+  playlist, songs already in it are left out (any release of the same song
+  counts), and adding never makes a duplicate. Undo takes the last add back
+  out.
 - It answers in a sentence or two. If a request takes more than 16 tool
   steps, Glass asks the model for an answer with what it found instead of
   stopping with an error.

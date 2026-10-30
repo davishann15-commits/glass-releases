@@ -21,6 +21,9 @@ final class Store {
     var saved: [String: Bool] = [:]
     var toast: Toast?
     var lyrics: LyricsModel?
+    /// The seek bar while it's dragged, and for a moment after it's let go (until the
+    /// player has reported the new position): the lyrics follow it.
+    var scrub: Scrub?
     var theme: ThemeModel?
     var settings: SettingsModel?
     var local: LocalModel?
@@ -257,6 +260,20 @@ final class Store {
     // MARK: playback helpers
 
     var isPlaying: Bool { playback?.isPlaying ?? false }
+
+    struct Scrub: Equatable {
+        var ms: UInt64
+        var since: Date
+        /// Still held: the position stays where the finger is.
+        var held: Bool
+    }
+
+    /// Where the seek bar says the song is, while it's being dragged (or was just let go).
+    func scrubPosition(at date: Date = .now) -> UInt64? {
+        guard let s = scrub else { return nil }
+        if s.held || !isPlaying { return s.ms }
+        return s.ms + UInt64(max(date.timeIntervalSince(s.since), 0) * 1000)
+    }
 
     /// The position now (the core sends a position and when it was taken).
     func position(at date: Date = .now) -> UInt64 {

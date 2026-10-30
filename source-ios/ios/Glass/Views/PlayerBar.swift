@@ -161,11 +161,23 @@ struct SeekRail: View {
                     .frame(maxHeight: .infinity)
                     .contentShape(Rectangle())
                     .gesture(DragGesture(minimumDistance: 0)
-                        .onChanged { v in drag = min(max(v.location.x / g.size.width, 0), 1) }
+                        .onChanged { v in
+                            let f = min(max(v.location.x / g.size.width, 0), 1)
+                            drag = f
+                            // The lyrics follow the bar while it's held.
+                            store.scrub = Store.Scrub(ms: UInt64(f * dur), since: .now, held: true)
+                        }
                         .onEnded { v in
                             let f = min(max(v.location.x / g.size.width, 0), 1)
                             store.core.seek(positionMs: UInt64(f * dur))
                             drag = nil
+                            // …and on from there until the player reports the new position.
+                            let let_go = Store.Scrub(ms: UInt64(f * dur), since: .now, held: false)
+                            store.scrub = let_go
+                            Task { @MainActor in
+                                try? await Task.sleep(for: .milliseconds(1500))
+                                if store.scrub == let_go { store.scrub = nil }
+                            }
                         })
                 }
                 .frame(height: 28)

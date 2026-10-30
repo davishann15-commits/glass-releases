@@ -9,13 +9,34 @@
 
 [lyrics]
 # Where lyrics come from:
-#   "auto"    LRCLIB first; with fallback on, then Spotify's lyrics (Spotify songs)
+#   "auto"    LRCLIB first (with fallback on, then Spotify's lyrics for Spotify
+#             songs), while the word-by-word services in `sources` are asked at
+#             the same time: their timing replaces line timing when they have
+#             the very recording
 #   "lrclib"  LRCLIB only (lrclib.net, a free community lyrics database)
 #   "spotify" Spotify only (Spotify songs; uses Glass's Spotify connection)
+#   or one of the services below on its own
 provider = "auto"
 
 # With "auto": when LRCLIB has no usable match, try Spotify's lyrics.
 fallback = true
+
+# Word-by-word lyrics, asked in this order of preference (with "auto"):
+#   "lrcred"     lrc.red: word and syllable timing, duets and backing vocals,
+#                by ISRC (free)
+#   "qobuzify"   Qobuzify: syllable timing for many Spanish and Japanese songs
+#                the others time only by the line (free); used only when its
+#                timing agrees with the line-synced lyrics
+#   "unison"     Unison: Better Lyrics' community syncs (free)
+#   "netease"    NetEase Cloud Music's word timing (free; masks some words)
+#   "lrcmux"     lrcmux: KuGou's word timing (free; masks some words)
+#   "spicy"      Spicy Lyrics: needs your own key (Settings → Lyrics)
+#   "musixmatch" Musixmatch: needs your own API key (Settings → Lyrics);
+#                word timing needs their Enterprise plan
+# Each gets the song's title, artist, album, length and ISRC; Spicy Lyrics
+# and Qobuzify get the Spotify track ID instead for Spotify songs.
+# [] turns word timing off.
+sources = ["lrcred", "qobuzify", "unison", "netease", "lrcmux"]
 
 # Timing offset in milliseconds, -10000 to 10000. Positive shows lyrics
 # earlier (when they lag behind the music, e.g. on Bluetooth speakers);
@@ -37,9 +58,9 @@ translate_to = "system"
 #   "assistant" the assistant's model (any system; sends the lyrics to OpenAI)
 translator = "auto"
 
-# Optional: a homepage or email LRCLIB can contact you at about Glass's
-# requests. It's sent in the User-Agent header to lrclib.net; left empty, that
-# says only "Glass/<version> (desktop music player)".
+# Optional: a homepage or email the lyrics services can contact you at about
+# Glass's requests (lrc.red asks for one). It's sent in the User-Agent header;
+# left empty, that names only Glass and its homepage.
 contact = ""
 
 [assistant]

@@ -71,7 +71,7 @@ unavailable instead of hiding them.
 | Playlist: search in list, sort (custom/title/artist/album/date added/duration), List/Compact | ✅ | Sorting by clicking column headers works too. |
 | Playlist: add, remove, drag to reorder, edit details, public/private, collaborative | ✅ | Changing the cover image isn't supported. |
 | Playlist: "Find more" search | ✅ | |
-| Playlist: Recommended songs | ✖ | `/recommendations` was removed for third-party apps (Nov 2024). |
+| Playlist: Recommended songs | ✖ | `/recommendations` was removed for third-party apps (Nov 2024). Ask the assistant instead ("recommend songs for this playlist"): it leaves out what the playlist has, and each song can be previewed and added. |
 | Playlist: column picker | ◐ | Columns adapt to width but can't be chosen. |
 | Album: discs, copyright/℗, more by artist | ✅ | |
 | Artist: banner, follow, popular, discography (with filters), appears on | ✅ | |
@@ -111,7 +111,7 @@ unavailable instead of hiding them.
 | Autoplay | ✅ | |
 | Explicit-content filter | ✅ | Client-side: greyed out and skipped. |
 | Canvas, music videos, video podcasts | ✖ | Private API / video DRM. |
-| Lyrics on the now-playing screen and side panel | ◐ | From LRCLIB, a community database: line-synced for most songs, word by word only where LRCLIB has word timing (rare). Animated line changes; colors, size, alignment, position, spacing, fade, animation and font in `[lyrics]` / ⌘T. Your pick and timing are kept per song. |
+| Lyrics on the now-playing screen and side panel | ✅ | Line-synced from LRCLIB, upgraded to word or syllable timing from lrc.red, Qobuzify, Unison, NetEase or lrcmux (or Spicy Lyrics / Musixmatch with your key) when they have the very recording and keep time with it. Each word sweeps as it's sung; overlapping voices lit together, duets on two sides, backing vocals under their line; tap a line to play from it, scroll to read ahead. Animated line changes; colors, size, alignment, position, spacing, fade, animation, font and word timing (early/late, glow) in `[lyrics]` / ⌘T. Your pick (word-timed when a service has the same lyrics), timing and LRCLIB-lines-only are kept per song. |
 | Audio visualizer (V) | ✅ | Bars, mirror or wave under the lyrics, in the theme's colors; follows audio played on this computer. |
 | Now playing: the playlist that's playing (P) | ✅ | Pick any song from the playlist, album, artist or Liked Songs that's playing (or the local list). |
 | Spotify's own lyrics (Musixmatch) | ✅ | The fallback for Spotify songs LRCLIB doesn't have, through Glass's Spotify connection. |
@@ -162,7 +162,7 @@ unavailable instead of hiding them.
 
 | Feature | Status | Notes |
 |---|---|---|
-| Optional AI assistant (⌘J, or `?` in ⌘K) | ✅ | Sign in with ChatGPT (eligible Plus/Pro plans) or your own API key. Uses your Spotify library, history and search (can be turned off) and your local files: queues and plays songs, likes them, controls playback in the background, answers questions, and builds Spotify or local playlists from previews you save with one click. Bulk changes need approval; undo is available. |
+| Optional AI assistant (⌘J, or `?` in ⌘K) | ✅ | Sign in with ChatGPT (eligible Plus/Pro plans) or your own API key. Uses your Spotify library, history and search (can be turned off) and your local files: queues and plays songs, likes them, controls playback in the background, answers questions, and builds Spotify or local playlists from previews you save with one click. Recommendations for a playlist or album come as a card: ▶ plays each song's 30-second preview, + adds it to a playlist, and songs already in the playlist are left out. Bulk changes need approval; undo is available. |
 | Glass local playlists | ✅ | Playlists of your local files, kept on this computer. Add songs by menu, file picker, Finder drop or dragging from Local Files; remove them with undo. |
 | Automatic updates | ✅ | The Mac app downloads new versions in the background and installs them on quit (or now, from the top bar); only updates signed with the release key are installed. |
 | Spotify DJ (X) | ✅ | Plays the DJ's mix page after page (librespot couldn't: the DJ resolves to an empty context plus a session link). X's lines are spoken in X's voice before songs, as in Spotify's apps, and shown in the player bar; pause works on X too, and the voice can be turned off. DJ card on Home, `dj` in ⌘K; other Spotify apps can start the DJ on Glass. |

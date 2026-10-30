@@ -121,6 +121,12 @@ impl Translation {
     pub fn keep(&self) -> bool {
         matches!(self, Translation::Ready { .. } | Translation::Same { .. })
     }
+
+    /// An "already in …" the lyrics' own script rules out (kana called English), kept
+    /// by an earlier version of Glass: worked out again instead.
+    pub fn contradicted_by(&self, lines: &[String]) -> bool {
+        matches!(self, Translation::Same { lang } if script_rules_out(lines, lang))
+    }
 }
 
 /// The language translations go into: `lyrics.translate_to`, or the
@@ -244,6 +250,26 @@ pub fn script_language(lines: &[String]) -> Option<&'static str> {
         Some("el")
     } else {
         None
+    }
+}
+
+/// Whether the lyrics' script rules out `lang`: kana is never English, whatever a
+/// source says. Han characters are written in Japanese and Korean as well as Chinese.
+fn script_rules_out(lines: &[String], lang: &str) -> bool {
+    match script_language(lines) {
+        Some("zh") => !matches!(base_code(lang).as_str(), "zh" | "ja" | "ko"),
+        Some(s) => s != base_code(lang),
+        None => false,
+    }
+}
+
+/// The language to translate from: the one the source gives, unless the lyrics'
+/// script rules it out (lrc.red marks many Japanese songs "en"), then the script's.
+/// `None`: the translator works it out.
+pub fn source_language(given: Option<&str>, lines: &[String]) -> Option<String> {
+    match given {
+        Some(g) if !script_rules_out(lines, g) => Some(g.to_string()),
+        _ => script_language(lines).map(str::to_string),
     }
 }
 
@@ -379,8 +405,9 @@ pub fn assistant_input(lines: &[String]) -> String {
     lines.iter().enumerate().map(|(i, l)| format!("{}. {}", i + 1, if l.trim().is_empty() { "♪" } else { l })).collect::<Vec<_>>().join("\n")
 }
 
-/// The model's answer: (source language, one line per line).
-pub fn parse_assistant(text: &str, n: usize, target: &str) -> Translation {
+/// The model's answer to translating `original`: (source language, one line per line).
+pub fn parse_assistant(text: &str, original: &[String], target: &str) -> Translation {
+    let n = original.len();
     let t = text.trim().trim_start_matches("```json").trim_start_matches("```").trim_end_matches("```").trim();
     let start = t.find('{').unwrap_or(0);
     let end = t.rfind('}').map(|e| e + 1).unwrap_or(t.len());
@@ -395,6 +422,8 @@ pub fn parse_assistant(text: &str, n: usize, target: &str) -> Translation {
             l.clear();
         }
     }
+    // A song with an English chorus may be called English; its kana say otherwise.
+    let source = if script_rules_out(original, &source) { script_language(original).unwrap_or_default().to_string() } else { source };
     if !source.is_empty() && source == base_code(target) {
         return Translation::Same { lang: source };
     }
@@ -465,11 +494,32 @@ mod tests {
     }
 
     #[test]
+    fn the_script_outweighs_a_sources_language() {
+        // lrc.red marks many Japanese songs "en" (Mayonaka no Door, Telephone Number).
+        let ja: Vec<String> = ["Stay with me", "真夜中のドアをたたき", "帰らないでと泣いた", "あの季節が 今 目の前"].map(str::to_string).into();
+        assert_eq!(source_language(Some("en"), &ja).as_deref(), Some("ja"));
+        assert_eq!(source_language(None, &ja).as_deref(), Some("ja"));
+        assert_eq!(source_language(Some("ja"), &ja).as_deref(), Some("ja"));
+        let latin: Vec<String> = vec!["Mayonaka no doa wo tataki".into()];
+        assert_eq!(source_language(Some("ja"), &latin).as_deref(), Some("ja"), "romanized: the source's word stands");
+        assert_eq!(source_language(None, &latin), None);
+        let kanji: Vec<String> = vec!["東京夜景 永遠".into()];
+        assert_eq!(source_language(Some("ja"), &kanji).as_deref(), Some("ja"), "Han characters are Japanese too");
+        // A verdict kept by an earlier version.
+        assert!(Translation::Same { lang: "en".into() }.contradicted_by(&ja));
+        assert!(!Translation::Same { lang: "en".into() }.contradicted_by(&latin));
+        // The assistant calling such a song English: its translation is used.
+        let r = parse_assistant(r#"{"source_language": "en", "lines": ["Stay with me", "Knocking on the midnight door", "I cried, don't go home", "That season, now, before my eyes"]}"#, &ja, "en");
+        assert!(matches!(&r, Translation::Ready { from, .. } if from == "ja"), "{r:?}");
+    }
+
+    #[test]
     fn assistant_answers_are_checked() {
-        let ok = parse_assistant("```json\n{\"source_language\": \"ja\", \"lines\": [\"Midnight door\", \"♪\"]}\n```", 2, "en");
+        let two = vec!["真夜中のドア".to_string(), String::new()];
+        let ok = parse_assistant("```json\n{\"source_language\": \"ja\", \"lines\": [\"Midnight door\", \"♪\"]}\n```", &two, "en");
         assert_eq!(ok, Translation::Ready { from: "ja".into(), to: "en".into(), lines: vec!["Midnight door".into(), String::new()], by: "the assistant (OpenAI)".into() });
-        assert!(matches!(parse_assistant("{\"source_language\": \"ja\", \"lines\": [\"one\"]}", 2, "en"), Translation::Failed(_)), "lines must line up");
-        assert_eq!(parse_assistant("{\"source_language\": \"en\", \"lines\": [\"a\"]}", 1, "en"), Translation::Same { lang: "en".into() });
+        assert!(matches!(parse_assistant("{\"source_language\": \"ja\", \"lines\": [\"one\"]}", &two, "en"), Translation::Failed(_)), "lines must line up");
+        assert_eq!(parse_assistant("{\"source_language\": \"en\", \"lines\": [\"a\"]}", &["a".to_string()], "en"), Translation::Same { lang: "en".into() });
         assert!(assistant_instructions("es").contains("Spanish"));
         assert_eq!(assistant_input(&["a".into(), "".into()]), "1. a\n2. ♪");
     }

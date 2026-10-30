@@ -88,6 +88,32 @@ final class GlassUITests: XCTestCase {
         shot("assistant-undone")
     }
 
+    /// Ask for recommendations → the model reads a playlist and recommends songs for
+    /// "Road Trip", leaving out the ones already in it → ▶ and + reach the core (the
+    /// demo has no preview clips and sends nothing to Spotify, and says so).
+    func testAssistantRecommendations() {
+        launch(["-assistantMock", "http://127.0.0.1:8765/v1"])
+        let open = app.buttons.matching(identifier: "assistant-button").firstMatch
+        waitFor(open)
+        open.tap()
+        let input = app.descendants(matching: .any)["assistant-input"].firstMatch
+        waitFor(input)
+        input.tap()
+        input.typeText("recommend some songs for my road trip playlist")
+        app.buttons["send"].firstMatch.tap()
+        waitFor(text("For Road Trip"), 30)
+        waitFor(text("none already in it"))
+        XCTAssertTrue(text("Paper Planes").exists, "the 11th song, not in Road Trip")
+        XCTAssertFalse(text("Driftwood").exists, "the 9th is already in Road Trip, so it's left out")
+        shot("assistant-recommendations")
+        app.buttons["Play a 30-second preview of Paper Planes"].firstMatch.tap()
+        waitFor(text("no preview"))
+        app.buttons["Add Paper Planes to Road Trip"].firstMatch.tap()
+        waitFor(text("Couldn't add to “Road Trip”"))
+        app.buttons["dismiss"].firstMatch.tap()
+        XCTAssertTrue(text("For Road Trip").waitForNonExistence(timeout: 5))
+    }
+
     /// Settings › Assistant, off and on (the demo keeps nothing).
     func testAssistantSettings() {
         launch(["-route", "settings"])

@@ -141,7 +141,7 @@ private struct Transcript: View {
         ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 10) {
-                    if a.lines.isEmpty && a.drafts.isEmpty {
+                    if a.lines.isEmpty && a.drafts.isEmpty && a.picks.isEmpty {
                         Text(a.dataNote).gFont(11.5).foregroundStyle(look.muted).padding(.top, 8)
                     }
                     ForEach(Array(a.lines.enumerated()), id: \.offset) { _, l in
@@ -183,6 +183,8 @@ private struct Transcript: View {
                         .overlay(RoundedRectangle(cornerRadius: look.smallRadius).stroke(look.accent, lineWidth: 1))
                     }
                     ForEach(a.drafts, id: \.id) { d in DraftCard(d: d, busy: a.running != nil) }
+                    // Recommendations last, the newest nearest the composer.
+                    ForEach(a.picks, id: \.id) { p in PicksCard(p: p) }
                     Color.clear.frame(height: 1).id("end")
                 }
                 .padding(.horizontal, 16)
@@ -190,6 +192,7 @@ private struct Transcript: View {
             }
             .scrollDismissesKeyboard(.interactively)
             .onChange(of: a.lines.count) { withAnimation { proxy.scrollTo("end", anchor: .bottom) } }
+            .onChange(of: a.picks.count) { withAnimation { proxy.scrollTo("end", anchor: .bottom) } }
             .onChange(of: a.lines.last) { proxy.scrollTo("end", anchor: .bottom) }
             .onAppear { proxy.scrollTo("end", anchor: .bottom) }
         }
@@ -270,6 +273,99 @@ private struct DraftCard: View {
     private func rename() {
         let n = name.trimmingCharacters(in: .whitespaces)
         if !n.isEmpty, n != d.name { store.core.aiEditDraft(draft: d.id, edit: .rename(name: n)) }
+    }
+}
+
+/// Recommendations (desktop `picks_card`): ▶ plays a song's 30-second preview (what's
+/// playing pauses for it), + adds it to the playlist they're for, or to one chosen from
+/// a menu; "add all" adds the rest.
+private struct PicksCard: View {
+    @Environment(Store.self) private var store
+    let p: PicksModel
+
+    var body: some View {
+        let look = Look.shared
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 8) {
+                Text("recommendations").gFont(11).foregroundStyle(look.muted)
+                Text(p.title).gFont(14.5).lineLimit(1)
+            }
+            Text(meta).gFont(11.5).foregroundStyle(look.sub)
+            ForEach(p.songs, id: \.uri) { s in row(s) }
+            FlowRow(spacing: 4) {
+                if let id = p.forPlaylist, let name = p.forPlaylistName, p.songs.filter({ !$0.addedTo.contains(id) }).count > 1 {
+                    BracketButton(title: "add all to “\(name.prefix(18))”", primary: true) { store.core.aiAddPicks(card: p.id, uri: nil, playlist: id) }
+                }
+                BracketButton(title: "dismiss") { store.core.aiDismissPicks(card: p.id) }
+            }
+        }
+        .padding(10)
+        .overlay(RoundedRectangle(cornerRadius: look.smallRadius).stroke(look.divider, lineWidth: 1))
+    }
+
+    private var meta: String {
+        let n = p.songs.count == 1 ? "1 song" : "\(p.songs.count) songs"
+        if let name = p.forPlaylistName { return "\(n) for “\(name)”, none already in it · ▶ plays 30 seconds" }
+        return "\(n) · ▶ plays 30 seconds, + adds to a playlist"
+    }
+
+    private func row(_ s: PickRow) -> some View {
+        let look = Look.shared
+        let playing: UInt32? = if case let .playing(left) = s.preview { left } else { nil }
+        return HStack(alignment: .top, spacing: 8) {
+            Button { store.core.aiPreview(uri: s.uri) } label: {
+                ZStack {
+                    switch s.preview {
+                    case .idle: Image(systemName: "play.fill")
+                    case .loading: ProgressView().controlSize(.mini)
+                    case .playing: Image(systemName: "stop.fill")
+                    }
+                }
+                .font(.system(size: 12))
+                .foregroundStyle(s.preview == .idle ? look.sub : look.accent)
+                .frame(width: 28, height: 28)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(s.preview == .idle ? "Play a 30-second preview of \(s.title)" : "Stop the preview of \(s.title)")
+            VStack(alignment: .leading, spacing: 2) {
+                Text("\(s.title) — \(s.artist)").gFont(12.5).lineLimit(1)
+                if !s.why.isEmpty { Text(s.why).gFont(11).foregroundStyle(look.muted).fixedSize(horizontal: false, vertical: true) }
+            }
+            .padding(.top, 5)
+            Spacer(minLength: 4)
+            Text(playing.map { String(format: "0:%02d", $0) } ?? Fmt.ms(s.durationMs)).gFont(11).foregroundStyle(playing == nil ? look.sub : look.accent).padding(.top, 6)
+            add(s).padding(.top, 5)
+        }
+    }
+
+    @ViewBuilder private func add(_ s: PickRow) -> some View {
+        let look = Look.shared
+        if let id = p.forPlaylist {
+            if s.addedTo.contains(id) {
+                Text("added ✓").gFont(11.5).foregroundStyle(look.accent)
+            } else {
+                Button("+ add") { store.core.aiAddPicks(card: p.id, uri: s.uri, playlist: id) }
+                    .gFont(11.5).foregroundStyle(look.sub)
+                    .accessibilityLabel("Add \(s.title) to \(p.forPlaylistName ?? "the playlist")")
+            }
+        } else {
+            Menu {
+                ForEach(writable, id: \.uri) { pl in
+                    let pid = String(pl.uri.split(separator: ":").last ?? "")
+                    Button(s.addedTo.contains(pid) ? "\(pl.title)  ✓" : pl.title) { store.core.aiAddPicks(card: p.id, uri: s.uri, playlist: pid) }
+                        .disabled(s.addedTo.contains(pid))
+                }
+            } label: {
+                Text(s.addedTo.isEmpty ? "+ add" : "added ✓").gFont(11.5).foregroundStyle(s.addedTo.isEmpty ? look.sub : look.accent)
+            }
+            .accessibilityLabel("Add \(s.title) to a playlist")
+        }
+    }
+
+    /// Playlists songs can be added to (owned or collaborative), as in Add to playlist.
+    private var writable: [LibItem] {
+        (store.library?.items ?? []).filter { $0.kind == .playlist && ($0.editable || $0.collaborative) }
     }
 }
 

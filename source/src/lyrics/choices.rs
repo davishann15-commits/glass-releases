@@ -31,10 +31,17 @@ struct Choice {
     pick: Option<Picked>,
     #[serde(default, skip_serializing_if = "is_zero")]
     offset_ms: i64,
+    /// Line by line: LRCLIB's lyrics (or the pick as it is), no word timing.
+    #[serde(default, skip_serializing_if = "is_false")]
+    lines_only: bool,
 }
 
 fn is_zero(v: &i64) -> bool {
     *v == 0
+}
+
+fn is_false(v: &bool) -> bool {
+    !*v
 }
 
 fn song(t: &TrackRef) -> String {
@@ -85,12 +92,12 @@ impl Choices {
         let i = match Self::find(&list, t) {
             Some(i) => i,
             None => {
-                list.push(Choice { key: t.key.clone(), song: song(t), secs: t.duration_ms / 1000, pick: None, offset_ms: 0 });
+                list.push(Choice { key: t.key.clone(), song: song(t), secs: t.duration_ms / 1000, pick: None, offset_ms: 0, lines_only: false });
                 list.len() - 1
             }
         };
         f(&mut list[i]);
-        if list[i].pick.is_none() && list[i].offset_ms == 0 {
+        if list[i].pick.is_none() && list[i].offset_ms == 0 && !list[i].lines_only {
             list.remove(i);
         }
         match serde_json::to_vec(&*list) {
@@ -179,6 +186,17 @@ impl Choices {
     pub fn set_offset(&self, t: &TrackRef, ms: i64) {
         self.edit(t, |c| c.offset_ms = ms);
     }
+
+    /// The user would rather have this song's lyrics line by line (LRCLIB's, or
+    /// their pick as it is) than word timing from the other services.
+    pub fn lines_only(&self, t: &TrackRef) -> bool {
+        let list = self.list.lock().unwrap();
+        Self::find(&list, t).is_some_and(|i| list[i].lines_only)
+    }
+
+    pub fn set_lines_only(&self, t: &TrackRef, on: bool) {
+        self.edit(t, |c| c.lines_only = on);
+    }
 }
 
 #[cfg(test)]
@@ -186,7 +204,7 @@ mod tests {
     use super::*;
 
     fn track(key: &str, title: &str, secs: u64) -> TrackRef {
-        TrackRef { key: key.into(), title: title.into(), artists: vec!["Anri".into()], album: "Timely!!".into(), duration_ms: secs * 1000 }
+        TrackRef { key: key.into(), title: title.into(), artists: vec!["Anri".into()], album: "Timely!!".into(), duration_ms: secs * 1000, ..Default::default() }
     }
 
     fn record(id: u64) -> Record {
@@ -215,6 +233,11 @@ mod tests {
         again.forget_pick(&album);
         again.set_offset(&album, 0);
         assert!(again.pick(&album).is_none());
+        assert!(again.list.lock().unwrap().is_empty());
+        // Line by line instead of word timing is kept too, until it's turned off.
+        again.set_lines_only(&album, true);
+        assert!(again.lines_only(&single) && !again.lines_only(&track("spotify:track:c", "Windy Summer", 270)));
+        again.set_lines_only(&album, false);
         assert!(again.list.lock().unwrap().is_empty());
         let _ = std::fs::remove_file(path);
     }

@@ -315,35 +315,54 @@ fn install_fonts(ctx: &egui::Context, family: &str, lyrics: &str) {
     let regular = load("ui-regular", &files.regular);
     let medium = load("ui-medium", &files.medium);
     let bold = load("ui-bold", &files.bold);
-    let mut fallbacks = Vec::new();
-    for (i, path) in [
-        "/System/Library/Fonts/ヒラギノ角ゴシック W3.ttc",
-        "/System/Library/Fonts/Hiragino Sans GB.ttc",
-        "/System/Library/Fonts/AppleSDGothicNeo.ttc",
-        "/System/Library/Fonts/Supplemental/Arial Unicode.ttf",
-        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
-        "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
-    ]
-    .iter()
-    .enumerate()
-    {
-        if let Some(fd) = font_file(std::path::Path::new(path), 0) {
-            let name = format!("fallback-{i}");
-            fonts.font_data.insert(name.clone(), Arc::new(fd));
-            fallbacks.push(name);
+    // Fallbacks: (file, face in the collection). Bold text gets bold Japanese,
+    // Chinese and Korean before the regular ones, so a bold line stays bold.
+    let mut add = |prefix: &str, files: &[(&str, u32)]| -> Vec<String> {
+        let mut names = Vec::new();
+        for (i, (path, index)) in files.iter().enumerate() {
+            if let Some(fd) = font_file(std::path::Path::new(path), *index) {
+                let name = format!("{prefix}-{i}");
+                fonts.font_data.insert(name.clone(), Arc::new(fd));
+                names.push(name);
+            }
         }
-    }
-    let chain = |first: &Option<String>| -> Vec<String> {
+        names
+    };
+    let fallbacks = add(
+        "fallback",
+        &[
+            ("/System/Library/Fonts/ヒラギノ角ゴシック W3.ttc", 0),
+            ("/System/Library/Fonts/Hiragino Sans GB.ttc", 0),
+            ("/System/Library/Fonts/AppleSDGothicNeo.ttc", 0),
+            ("/System/Library/Fonts/Supplemental/Arial Unicode.ttf", 0),
+            ("/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc", 0),
+            ("/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc", 0),
+        ],
+    );
+    let bold_fallbacks = add(
+        "fallback-bold",
+        &[
+            ("/System/Library/Fonts/ヒラギノ角ゴシック W6.ttc", 0),
+            ("/System/Library/Fonts/Hiragino Sans GB.ttc", 2),
+            ("/System/Library/Fonts/AppleSDGothicNeo.ttc", 6),
+            ("/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc", 0),
+            ("/usr/share/fonts/noto-cjk/NotoSansCJK-Bold.ttc", 0),
+        ],
+    );
+    let chain = |first: &Option<String>, bold: bool| -> Vec<String> {
         let mut c: Vec<String> = first.iter().cloned().chain(regular.iter().cloned()).collect();
         c.dedup();
+        if bold {
+            c.extend(bold_fallbacks.iter().cloned());
+        }
         c.extend(fallbacks.iter().cloned());
         c.extend(builtin.iter().cloned());
         c
     };
-    fonts.families.insert(FontFamily::Proportional, chain(&regular));
-    fonts.families.insert(FontFamily::Monospace, chain(&regular));
-    fonts.families.insert(FontFamily::Name("medium".into()), chain(&medium));
-    fonts.families.insert(FontFamily::Name("bold".into()), chain(&bold));
+    fonts.families.insert(FontFamily::Proportional, chain(&regular, false));
+    fonts.families.insert(FontFamily::Monospace, chain(&regular, false));
+    fonts.families.insert(FontFamily::Name("medium".into()), chain(&medium, false));
+    fonts.families.insert(FontFamily::Name("bold".into()), chain(&bold, true));
     let (lr, lb) = lyrics_fonts(lyrics);
     let lr = lr.map(|fd| {
         fonts.font_data.insert("lyrics-regular".into(), Arc::new(fd));
@@ -353,8 +372,8 @@ fn install_fonts(ctx: &egui::Context, family: &str, lyrics: &str) {
         fonts.font_data.insert("lyrics-bold".into(), Arc::new(fd));
         "lyrics-bold".to_string()
     });
-    fonts.families.insert(FontFamily::Name("lyrics".into()), chain(&lr.or(regular.clone())));
-    fonts.families.insert(FontFamily::Name("lyrics-bold".into()), chain(&lb.or(bold.clone())));
+    fonts.families.insert(FontFamily::Name("lyrics".into()), chain(&lr.or(regular.clone()), false));
+    fonts.families.insert(FontFamily::Name("lyrics-bold".into()), chain(&lb.or(bold.clone()), true));
     ctx.set_fonts(fonts);
 }
 

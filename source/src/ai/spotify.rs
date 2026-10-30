@@ -9,7 +9,7 @@
 //! through the app, which reports what really happened. Big changes need the
 //! user's approval.
 
-use super::tools::{AppOp, Approval, ApprovalKind, Dest, Draft, DraftStatus, Effect, QueueMode, Snapshot};
+use super::tools::{AppOp, Approval, ApprovalKind, Dest, Draft, DraftStatus, Effect, Pick, Picks, QueueMode, Snapshot};
 use crate::api::enc;
 use crate::lyrics::matching::normalize;
 use crate::model::fmt_ms;
@@ -88,6 +88,8 @@ pub struct Item {
     pub by: String,
     pub album: String,
     pub duration_ms: u64,
+    /// Songs: the 30-second preview clip, when the answer carried it.
+    pub preview: Option<String>,
 }
 
 /// More than a long conversation needs; about 2 MB at most.
@@ -150,7 +152,7 @@ pub struct Library {
 }
 
 /// A song regardless of release: its title without "(Remastered)" and the like, and its main artist.
-fn song_sig(title: &str, artists: &str) -> u64 {
+pub fn song_sig(title: &str, artists: &str) -> u64 {
     let main = artists.split(", ").next().unwrap_or(artists);
     fnv(&format!("{}\u{1f}{}", crate::lyrics::matching::title(title).base, normalize(main)))
 }
@@ -263,6 +265,7 @@ pub const NAMES: &[&str] = &[
     "check_heard",
     "spotify_queue",
     "propose_spotify_playlist",
+    "recommend_songs",
     "queue_spotify",
     "play_spotify",
     "like_songs",
@@ -308,6 +311,13 @@ pub fn definitions() -> Value {
             f("propose_spotify_playlist", "Show the user a Spotify playlist preview built from real song IDs. Nothing is saved until they click save. Set add_to_playlist_id to add the songs to one of their editable playlists instead of making a new one.", json!({
                 "name": { "type": "string" }, "description": { "type": ["string", "null"] }, "track_ids": ids.clone(), "add_to_playlist_id": { "type": ["string", "null"] }
             }), &["name", "description", "track_ids", "add_to_playlist_id"]),
+            f("recommend_songs", "Show the user song recommendations as a card: they play a 30-second preview of each and add the ones they like to a playlist themselves. Nothing changes until they do. With for_playlist_id (a playlist of theirs they can add to), songs already in it are left out and adding goes there. Each song gets a few words on why it fits.", json!({
+                "title": { "type": "string", "description": "A short heading, e.g. \"For Night Drive\" or \"Like this album\"." },
+                "songs": { "type": "array", "items": { "type": "object", "properties": { "id": { "type": "string", "description": "A spotify:track: ID the tools returned." }, "why": { "type": "string", "description": "Why it fits, in a few words." } }, "required": ["id", "why"], "additionalProperties": false } },
+                "for_playlist_id": { "type": ["string", "null"], "description": "The playlist these are for, or null." },
+                "count": { "type": ["integer", "null"], "description": "How many to show (1–30, default 10); send extra songs so ones left out can be replaced." },
+                "new_only": { "type": "boolean", "description": "Leave out songs already in any of their playlists or Liked Songs." }
+            }), &["title", "songs", "for_playlist_id", "count", "new_only"]),
             f("queue_spotify", "Add songs to the Spotify queue (after anything already queued), or play them now. Happens right away; queueing more than 20 songs in one request needs the user's approval (playing them now doesn't).", json!({
                 "track_ids": ids.clone(), "position": { "type": "string", "enum": ["queue", "play_now"] }
             }), &["track_ids", "position"]),
@@ -392,7 +402,9 @@ fn track(c: &Catalog, t: &Value) -> Option<Value> {
         return None;
     }
     let (name, by, album, ms) = (st(t, "name"), names(&t["artists"]), st(&t["album"], "name"), t["duration_ms"].as_u64().unwrap_or(0));
-    c.add(Item { uri: uri.into(), name: name.into(), by: by.clone(), album: album.into(), duration_ms: ms });
+    // Another answer about the same song may have had its preview.
+    let preview = t["preview_url"].as_str().filter(|u| u.starts_with("https://")).map(str::to_string).or_else(|| c.get(uri).and_then(|i| i.preview));
+    c.add(Item { uri: uri.into(), name: name.into(), by: by.clone(), album: album.into(), duration_ms: ms, preview });
     let mut v = json!({ "id": uri, "title": name, "artist": by, "album": album, "duration": fmt_ms(ms) });
     if let Some(y) = year(&t["album"]) {
         v["year"] = json!(y);
@@ -481,6 +493,7 @@ pub async fn run(s: &mut Snapshot, src: &dyn Source, name: &str, arguments: &str
         "check_heard" => (check_heard(s, src, &a).await, Effect::None),
         "spotify_queue" => (queue_now(s, src).await, Effect::None),
         "propose_spotify_playlist" => propose(s, src, &a).await,
+        "recommend_songs" => recommend(s, src, &a).await,
         "queue_spotify" => queue(s, &a),
         "play_spotify" => play(s, src, &a).await,
         "like_songs" => like(s, &a),
@@ -909,6 +922,117 @@ async fn propose(s: &mut Snapshot, src: &dyn Source, a: &Value) -> (Value, Effec
     (super::tools::draft_summary(s, &d, &unknown, dups), Effect::Draft(d))
 }
 
+/// The songs in a playlist: each recording, and each song whatever its release.
+#[derive(Default)]
+pub struct SongSet {
+    uris: HashSet<String>,
+    songs: HashSet<u64>,
+}
+
+impl SongSet {
+    pub fn insert(&mut self, uri: &str, title: &str, artists: &str) {
+        self.uris.insert(uri.to_string());
+        if !title.is_empty() {
+            self.songs.insert(song_sig(title, artists));
+        }
+    }
+    /// This recording, or the same song on another release (a remaster, a single).
+    pub fn has(&self, uri: &str, title: &str, artists: &str) -> bool {
+        self.uris.contains(uri) || (!title.is_empty() && self.songs.contains(&song_sig(title, artists)))
+    }
+}
+
+/// Every song in playlist `id` (a bare ID).
+pub async fn playlist_songs(src: &dyn Source, id: &str) -> Result<SongSet, String> {
+    let v = src.get(format!("/playlists/{id}/tracks?limit=100"), Some(10_000)).await?;
+    let mut set = SongSet::default();
+    for r in items(&v) {
+        let t = &r["track"];
+        set.insert(st(t, "uri"), st(t, "name"), &names(&t["artists"]));
+    }
+    Ok(set)
+}
+
+/// The most songs one recommendation card shows.
+pub const MAX_PICKS: usize = 30;
+
+async fn recommend(s: &mut Snapshot, src: &dyn Source, a: &Value) -> (Value, Effect) {
+    let Some(list) = a["songs"].as_array() else { return (json!({ "error": "songs must be a list of {id, why}" }), Effect::None) };
+    let (mut picks, mut unknown, mut seen) = (Vec::new(), Vec::new(), HashSet::new());
+    for x in list {
+        let id = x["id"].as_str().unwrap_or("").trim();
+        if !(id.starts_with("spotify:track:") && s.catalog.contains(id)) {
+            unknown.push(id.chars().take(60).collect::<String>());
+        } else if seen.insert(id.to_string()) {
+            picks.push(Pick { uri: id.to_string(), why: x["why"].as_str().unwrap_or("").trim().chars().take(160).collect(), added_to: Vec::new() });
+        }
+    }
+    if picks.is_empty() {
+        return (json!({ "error": "none of those are songs the tools returned", "rejected_ids": unknown }), Effect::None);
+    }
+    let count = a["count"].as_u64().map(|n| n.clamp(1, MAX_PICKS as u64) as usize).unwrap_or(10);
+    let label = |s: &Snapshot, uri: &str| s.catalog.get(uri).map(|i| format!("{} — {}", i.name, i.by)).unwrap_or_default();
+    let mut out = json!({});
+    // For a playlist: one they can add to, without what it already has.
+    let for_playlist = match str_arg(a, "for_playlist_id").map(bare_id) {
+        None => None,
+        Some(id) => {
+            if let Err(e) = ensure_playlists(s, src).await {
+                return (failed(e), Effect::None);
+            }
+            let uri = format!("spotify:playlist:{id}");
+            match s.spotify_playlists.as_deref().unwrap_or_default().iter().find(|p| p.uri == uri) {
+                Some(p) if p.editable => {}
+                Some(_) => return (json!({ "error": "the user can't add songs to that playlist (it isn't theirs); use for_playlist_id null" }), Effect::None),
+                None => return (json!({ "error": "that isn't one of the user's playlists; call my_spotify_playlists" }), Effect::None),
+            }
+            let has = match playlist_songs(src, &id).await {
+                Ok(h) => h,
+                Err(e) => return (failed(e), Effect::None),
+            };
+            let (keep, there): (Vec<Pick>, Vec<Pick>) = picks.into_iter().partition(|p| {
+                let it = s.catalog.get(&p.uri).unwrap_or_default();
+                !has.has(&p.uri, &it.name, &it.by)
+            });
+            picks = keep;
+            if !there.is_empty() {
+                out["left_out_already_in_playlist"] = json!(there.iter().map(|p| label(s, &p.uri)).collect::<Vec<_>>());
+            }
+            Some(id)
+        }
+    };
+    if a["new_only"] == true {
+        match s.library.get(src).await {
+            Ok(lib) => {
+                let (keep, theirs): (Vec<Pick>, Vec<Pick>) = picks.into_iter().partition(|p| {
+                    let it = s.catalog.get(&p.uri).unwrap_or_default();
+                    !lib.has(&p.uri, &it.name, &it.by)
+                });
+                picks = keep;
+                if !theirs.is_empty() {
+                    out["left_out_already_theirs"] = json!(theirs.iter().map(|p| label(s, &p.uri)).collect::<Vec<_>>());
+                }
+            }
+            Err(_) => out["couldnt_check"] = json!("their playlists and Liked Songs"),
+        }
+    }
+    picks.truncate(count);
+    if picks.is_empty() {
+        out["error"] = json!("every one of those was left out (see above); recommend other songs");
+        return (out, Effect::None);
+    }
+    let shown = picks.len();
+    let p = Picks { id: s.fresh_id("r"), title: str_arg(a, "title").unwrap_or("Recommendations").chars().take(80).collect(), songs: picks, for_playlist };
+    out["shown"] = json!(shown);
+    out["status"] = json!("Shown to the user with previews; they add the ones they like. Nothing was added yet.");
+    if shown < count {
+        out["short_by"] = json!(count - shown);
+        out["instruction"] = json!("Fewer than asked could be shown. If the user asked for a number, call recommend_songs again with other songs.");
+    }
+    rejected_note(&mut out, &unknown);
+    (out, Effect::Picks(p))
+}
+
 fn queue(s: &mut Snapshot, a: &Value) -> (Value, Effect) {
     let (ids, unknown, _) = match known_tracks(s, a) {
         Ok(x) => x,
@@ -1031,6 +1155,8 @@ pub mod tests {
         data.insert("/me/tracks/contains".into(), json!([true, false, false, false]));
         data.insert("/me/player/recently-played".into(), json!({ "items": [{ "track": catalog[1], "played_at": "2026-10-12T10:00:00Z" }] }));
         data.insert("/me/top/tracks".into(), json!({ "items": [] }));
+        // "Night Drive" (theirs) has Cat's Eye.
+        data.insert("/playlists/mine/tracks".into(), json!({ "items": [{ "track": catalog[0] }], "total": 1 }));
         data.insert(
             "/me/tracks".into(),
             json!({ "items": [{ "added_at": "2026-01-02T00:00:00Z", "track": catalog[0] }, { "added_at": "2025-05-02T00:00:00Z", "track": t("ride", "Ride on Time", "Tatsuro Yamashita", "Ride on Time", 355) }], "total": 2 }),
@@ -1156,6 +1282,41 @@ pub mod tests {
         assert_eq!(v["songs"], 1);
         let (_, e) = super::super::tools::run(&mut s, "request_save", &json!({ "draft_id": d.id }).to_string());
         assert!(matches!(e, Effect::Approval(Approval { kind: ApprovalKind::SaveDraft { replace: Some(r), .. }, .. }) if r == "mine"));
+    }
+
+    fn songs(ids: &[&str]) -> Value {
+        json!(ids.iter().map(|i| json!({ "id": format!("spotify:track:{i}"), "why": format!("{i} fits") })).collect::<Vec<_>>())
+    }
+
+    #[tokio::test]
+    async fn recommendations_leave_out_whats_in_the_playlist() {
+        let f = fake();
+        let mut s = snap();
+        call(&mut s, &f, "spotify_album", json!({ "album_id": "timely" })).await;
+        let args = json!({ "title": "For Night Drive", "songs": songs(&["cat", "remember", "shyness", "windy", "last"]), "for_playlist_id": "spotify:playlist:mine", "count": 3, "new_only": false });
+        let (v, e) = call(&mut s, &f, "recommend_songs", args).await;
+        let Effect::Picks(p) = e else { panic!("{v}") };
+        assert_eq!(
+            p.songs.iter().map(|x| x.uri.as_str()).collect::<Vec<_>>(),
+            ["spotify:track:remember", "spotify:track:shyness", "spotify:track:windy"],
+            "Cat's Eye is in the playlist; three were asked for"
+        );
+        assert_eq!((p.for_playlist.as_deref(), p.title.as_str(), p.songs[0].why.as_str()), (Some("mine"), "For Night Drive", "remember fits"));
+        assert_eq!(v["left_out_already_in_playlist"], json!(["Cat's Eye — Anri"]));
+        assert_eq!(v["shown"], 3);
+        assert!(f.sent.lock().unwrap().is_empty(), "showing them changes nothing");
+        // Only songs they don't have anywhere: Cat's Eye and Remember Summer Days (another release) are theirs.
+        let (v, e) =
+            call(&mut s, &f, "recommend_songs", json!({ "title": "New to you", "songs": songs(&["cat", "remember", "shyness", "fake"]), "for_playlist_id": null, "count": null, "new_only": true }))
+                .await;
+        let Effect::Picks(p) = e else { panic!("{v}") };
+        assert_eq!(p.songs.iter().map(|x| x.uri.as_str()).collect::<Vec<_>>(), ["spotify:track:shyness"]);
+        assert_eq!((v["short_by"].as_u64(), v["rejected_ids"].as_array().map(Vec::len)), (Some(9), Some(1)));
+        // Someone else's playlist can't be added to; all left out is an error, not an empty card.
+        let (v, e) = call(&mut s, &f, "recommend_songs", json!({ "title": "x", "songs": songs(&["windy"]), "for_playlist_id": "dw", "count": null, "new_only": false })).await;
+        assert!(v["error"].as_str().unwrap().contains("isn't theirs") && e == Effect::None);
+        let (v, e) = call(&mut s, &f, "recommend_songs", json!({ "title": "x", "songs": songs(&["cat"]), "for_playlist_id": "mine", "count": null, "new_only": false })).await;
+        assert!(v["error"].is_string() && e == Effect::None, "{v}");
     }
 
     #[tokio::test]

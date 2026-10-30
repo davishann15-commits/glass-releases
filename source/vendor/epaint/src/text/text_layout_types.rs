@@ -903,13 +903,17 @@ pub struct Glyph {
     /// The ascent of this font.
     pub font_ascent: f32,
 
-    /// The row/line height of this font.
+    /// The height of this font's glyph box (ascent − descent).
+    // Glass: without the line gap, which upstream includes.
     pub font_height: f32,
 
     /// The ascent of the sub-font within the font (`FontFace`).
     pub font_face_ascent: f32,
 
-    /// The row/line height of the sub-font within the font (`FontFace`).
+    /// The height of the sub-font's glyph box (ascent − descent). Glyphs of a
+    /// fallback font are centered on the main font's box by these two heights.
+    // Glass: without the line gap, which upstream includes, so a fallback with a
+    // big line gap (Hiragino's is half an em) isn't lifted off the baseline.
     pub font_face_height: f32,
 
     /// Position and size of the glyph in the font texture, in texels.

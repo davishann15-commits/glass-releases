@@ -25,7 +25,7 @@ mod assistant;
 mod command;
 mod library;
 pub mod local_library;
-mod menus;
+pub(crate) mod menus;
 mod mini;
 mod modals;
 mod nowbar;
@@ -65,9 +65,11 @@ pub fn root(app: &mut App, ui: &mut Ui) {
     shortcuts(app, &ctx);
     handle_close(app, &ctx);
 
-    // The playing album's colors (Settings ▸ Display): `tint` is how much of them the
-    // now-playing views get, `page` how much the whole window does (only on Now Playing).
-    // The same size Now Playing shows, so the two share one download.
+    // The playing album's colors (Settings ▸ Display, and the theme panel's album tab):
+    // `tint` is how much of them the now-playing views get, `page` how much the whole
+    // window does (on Now Playing, or on every page with "everywhere"). `parts` keep the
+    // theme's colors where the user wants them. The same size Now Playing shows, so the
+    // two share one download.
     let cover = app.now_cover(640).filter(|_| app.settings.album_colors);
     let palette = app.album_colors.frame(&ctx, cover.as_deref());
     let queue = app.queue.clone();
@@ -81,8 +83,10 @@ pub fn root(app: &mut App, ui: &mut Ui) {
     let fade = if theme::reduce_motion() { 0.0 } else { 0.45 };
     let on = app.settings.album_colors && palette.is_some() && app.album_colors.has_colors();
     let tint = ctx.animate_value_with_time(egui::Id::new("album-colors"), if on { 1.0 } else { 0.0 }, fade);
-    let page = ctx.animate_value_with_time(egui::Id::new("album-colors-page"), if on && app.route == Route::NowPlaying && !app.fullscreen { 1.0 } else { 0.0 }, fade);
-    let colors = |amount: f32| palette.filter(|_| amount > 0.0).map(|p| theme::override_with((p.key(), amount.to_bits()), |t| p.apply(t, amount)));
+    let whole_window = (app.route == Route::NowPlaying || app.settings.album_everywhere) && !app.fullscreen;
+    let page = ctx.animate_value_with_time(egui::Id::new("album-colors-page"), if on && whole_window { 1.0 } else { 0.0 }, fade);
+    let parts = app.settings.album_parts;
+    let colors = |amount: f32| palette.filter(|_| amount > 0.0).map(|p| theme::override_with((p.key(), amount.to_bits(), parts), |t| p.apply(t, amount, parts)));
 
     if app.fullscreen {
         let _colors = colors(tint);
@@ -91,7 +95,7 @@ pub fn root(app: &mut App, ui: &mut Ui) {
         return;
     }
 
-    if palette.is_some() && page > 0.0 {
+    if palette.is_some() && page > 0.0 && parts.background {
         let inner = CornerRadius::same(frame_radius.nw.saturating_sub(1));
         app.album_colors.paint_wash(ui, win.shrink(1.0), inner, page);
     }

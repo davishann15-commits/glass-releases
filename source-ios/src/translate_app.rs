@@ -87,14 +87,14 @@ impl App {
             return;
         }
         // Already in that language?
-        let hint = lyrics.language.clone().or_else(|| translate::script_language(&lines).map(str::to_string));
+        let hint = translate::source_language(lyrics.language.as_deref(), &lines);
         if let Some(h) = &hint
             && same_language(h, &target)
         {
             self.translation.result = Some(Arc::new(Translation::Same { lang: h.clone() }));
             return;
         }
-        if let Some(t) = self.translation_store.get(stored(&k)) {
+        if let Some(t) = self.translation_store.get(stored(&k)).filter(|t| !t.contradicted_by(&lines)) {
             self.translation.result = Some(Arc::new(t));
             return;
         }
@@ -148,7 +148,7 @@ impl App {
                 let r = match bearer().await {
                     Ok(token) => match client.stream(&token, &body, |_| {}).await {
                         Ok(done) if done.truncated => Translation::Failed("the translation was too long to finish".into()),
-                        Ok(done) => translate::parse_assistant(&done.text, lines.len(), &target),
+                        Ok(done) => translate::parse_assistant(&done.text, &lines, &target),
                         Err(e) => Translation::Failed(e.message(kind)),
                     },
                     Err(e) => Translation::Failed(e.to_string()),

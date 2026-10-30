@@ -73,9 +73,11 @@ once you've signed in to it.
 
 ## Build from source
 
-The [`source/`](source/) folder contains the Glass **1.0.0-beta.23** source code, the same
-version as the latest app release. The source was published from development
-commit `d8189e10e808533bfab1614714a04e49a06b9cec`.
+The [`source/`](source/) folder contains the Glass **1.0.0-beta.23** source code and what's
+new since the Mac release: word-by-word lyrics and the theme panel's album tab.
+The Arch Linux package already has them; the Mac app gets them in its next
+release. The source was published from development commit
+`c0909fd1036517ddad35c0d58260e16975cf0db6`.
 
 Install stable Rust with [rustup](https://rustup.rs). On macOS, also install
 Apple's command-line developer tools (`xcode-select --install`), Autoconf,
@@ -265,8 +267,8 @@ Keychain. Playing music needs Spotify Premium.
 ### Build Glass for iPhone from source
 
 The [`source-ios/`](source-ios/) folder contains the source code of Glass for iPhone
-**1.0.0-beta.23**, the same version as the `.ipa` (development commit
-`d8189e1`). It's the whole tree: the iPhone app in `ios/` shares most of its code
+**1.0.0-beta.23** and what's new since the `.ipa`, such as word-by-word lyrics
+(development commit `c0909fd`). It's the whole tree: the iPhone app in `ios/` shares most of its code
 with the Mac app in `src/`. You need a Mac with Xcode 26, Rust with the iOS targets
 and [XcodeGen](https://github.com/yonaskolb/XcodeGen):
 

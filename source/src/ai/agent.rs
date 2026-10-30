@@ -5,7 +5,7 @@
 
 use super::oauth::AuthError;
 use super::openai::{ApiError, BillingKind, Client, Usage};
-use super::tools::{self, AppOp, Approval, Draft, Effect, QueueMode, Snapshot};
+use super::tools::{self, AppOp, Approval, Draft, Effect, Picks, QueueMode, Snapshot};
 use super::{control, spotify};
 use serde_json::{Value, json};
 use std::future::Future;
@@ -44,7 +44,8 @@ pub fn instructions(spotify: bool, local: bool) -> String {
     if spotify {
         s.push_str(
             "- Know the user through their playlists: for recommendations or anything about their taste, call my_taste first and build on the artists they save and play most. Suggest things near their taste, not generic hits.\n\
-- \"Songs by X I haven't heard\": call unheard_songs (it already checks every playlist, Liked Songs and recent plays), then queue_spotify. Two steps; don't check albums one by one. Say \"probably new to you\".\n",
+- \"Songs by X I haven't heard\": call unheard_songs (it already checks every playlist, Liked Songs and recent plays), then queue_spotify. Two steps; don't check albums one by one. Say \"probably new to you\".\n\
+- Recommendations (\"recommend songs for my X playlist\", \"songs like this album\", \"what should I add\"): find real songs with the tools (artists near the seed, their other songs, search), then show them with recommend_songs — the user previews each and adds the ones they like. Don't queue them or build a playlist unless asked. For a playlist (named, or the one open), read it with spotify_playlist first to know its sound, and pass its ID as for_playlist_id: songs already in it are left out. For an album (named, or the one open), read it with spotify_album and recommend songs from other albums. Send about half again as many songs as count, so some can be left out; count is how many to show (default 10). new_only leaves out songs already in any of their playlists or Liked Songs.\n",
         );
     } else if local {
         s.push_str("- For recommendations or anything about the user's taste, call music.library_overview first and build on the artists and genres they have most.\n");
@@ -89,6 +90,8 @@ pub enum Event {
     Tool(String),
     Draft(Draft),
     Approval(Approval),
+    /// Recommendations to show.
+    Picks(Picks),
     /// Queue or play songs now; answer with what actually happened.
     Queue {
         paths: Vec<PathBuf>,
@@ -258,6 +261,10 @@ where
                     }
                     Effect::Approval(a) => {
                         events(Event::Approval(a));
+                        out
+                    }
+                    Effect::Picks(p) => {
+                        events(Event::Picks(p));
                         out
                     }
                     Effect::Queue { ids, mode } => {

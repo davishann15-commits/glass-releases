@@ -1016,6 +1016,32 @@ mod tests {
         assert_eq!(p, "/me/tracks");
     }
 
+    /// Songs carry their preview clip, and the clip plays (read-only):
+    /// `cargo test live_previews -- --ignored --nocapture`.
+    #[tokio::test(flavor = "multi_thread")]
+    #[ignore]
+    async fn live_previews() {
+        let cache = librespot_core::cache::Cache::new(Some(crate::config::config_dir()), None, None, None).unwrap();
+        let sp = Sp::connect_with(cache.credentials().expect("sign in to Glass first"), "", None).await.unwrap();
+        let ids = ["0VjIjW4GlUZAMYd2vXMi3b", "50WkRwFR0BAo6If7GtXnA8", "20JcU4ZiYAuKE4oIal8WoV", "41sGGCCoHI2GLV9qadX80A", "1gQxoBZiyLK5hRLLoBg89x", "4ogaI0XfmAunA0LyjveMSF"];
+        let mut tracks = Vec::new();
+        for id in ids {
+            tracks.push(sp.handle(&Method::GET, &format!("/tracks/{id}"), None, None).await.unwrap());
+        }
+        let mut with = 0;
+        for t in &tracks {
+            let url = t["preview_url"].as_str();
+            println!("{:<34} {}", t["name"].as_str().unwrap_or(""), url.unwrap_or("(none)"));
+            with += url.is_some() as usize;
+        }
+        let first = tracks.iter().find_map(|t| t["preview_url"].as_str()).expect("a song with a preview");
+        let clip = reqwest::get(first).await.unwrap();
+        assert_eq!(clip.status(), 200);
+        let bytes = clip.bytes().await.unwrap();
+        println!("{with} of {} have a preview; the first is {} KB", ids.len(), bytes.len() / 1024);
+        assert!(rodio::Decoder::new(std::io::Cursor::new(bytes.to_vec())).is_ok(), "the clip decodes");
+    }
+
     /// Every route the UI uses, against the real account in Glass's cache.
     /// Read-only. Run with `cargo test --release live_routes -- --ignored --nocapture`.
     #[tokio::test(flavor = "multi_thread")]

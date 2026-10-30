@@ -13,9 +13,8 @@ use crate::dsp::{DspParams, DspState};
 use crate::engine::{Engine, EngineEvent};
 use crate::local::{self, LocalPlayer, LocalTrack};
 use crate::lyrics::cache::Cache as LyricsCache;
-use crate::lyrics::lrclib::Client as LrclibClient;
-use crate::lyrics::service::{self as lyrics_service, LyricsState, ProviderSetting, Request as LyricsRequest, Resolved, Status as LyricsStatus};
-use crate::lyrics::{Candidate, Outcome, TrackRef};
+use crate::lyrics::service::{self as lyrics_service, LyricsState, ProviderSetting, Request as LyricsRequest, Resolved, Sources as LyricsSources, Status as LyricsStatus};
+use crate::lyrics::{Candidate, Outcome, ProviderId, TrackRef};
 use crate::model::{self, id_of, kind_of, s};
 use crate::theme_config::ThemeStore;
 use crate::ui;
@@ -337,6 +336,15 @@ pub enum Action {
         draft: String,
         edit: crate::assistant_app::DraftEdit,
     },
+    /// ▶ on a recommendation: its 30-second preview (again: stop).
+    AiPreview(String),
+    /// "+ add" on a recommendation card (`uri` None: every song on it) to a playlist (bare ID).
+    AiAddPicks {
+        card: String,
+        uri: Option<String>,
+        playlist: String,
+    },
+    AiDismissPicks(String),
     AiUndo,
     AiRefreshModels,
     AiSetModel(String),
@@ -401,7 +409,7 @@ pub enum Action {
     UndoPlaylistChange,
     // lyrics
     /// Look the playing song's lyrics up again, skipping the cache and forgetting a
-    /// match picked by hand.
+    /// match picked by hand (and line by line instead of word timing).
     LyricsRetry,
     /// The user picked this LRCLIB record for the playing song.
     LyricsPick(Arc<crate::lyrics::parse::Record>),
@@ -411,10 +419,17 @@ pub enum Action {
     LyricsSearch(String),
     LyricsClosePicker,
     LyricsProvider(ProviderSetting),
+    /// The word timing services asked, in order (config.toml `lyrics.sources`).
+    LyricsSources(Vec<ProviderId>),
+    /// Keeps (or with `None`, removes) the user's key for a lyrics service.
+    LyricsKey(ProviderId, Option<String>),
     /// The new timing offset in milliseconds (saved to config.toml).
     LyricsOffset(i64),
     /// The playing song's own timing offset, remembered for that song.
     LyricsSongOffset(i64),
+    /// The playing song's lyrics line by line (LRCLIB's, or the pick as it is)
+    /// instead of word timing, remembered for that song.
+    LyricsLinesOnly(bool),
     /// Original, original + translation, or translated.
     LyricsTranslation(crate::lyrics::translate::Mode),
     ClearLyricsCache,
@@ -496,6 +511,8 @@ pub enum Msg {
     SaveSong(String, crate::save_song::Status),
     /// A change the assistant asked for, done (or not) against Spotify.
     AiWrote(crate::assistant_app::Wrote),
+    /// A recommendation's preview, ready to play (or why not).
+    AiPreview(u64, Result<Option<crate::dj::Voice>, String>),
     /// A translation of the lyrics on screen.
     LyricsTranslated {
         key: String,
@@ -614,6 +631,9 @@ pub struct App {
     /// The optional assistant (on by default; it does nothing until signed in or given a key).
     pub ai: crate::ai::Assistant,
     pub ai_undo: Option<crate::assistant_app::AiUndo>,
+    /// A recommendation's preview playing (or loading).
+    pub ai_preview: Option<crate::ai::picks::Preview>,
+    pub ai_preview_gen: u64,
     /// Where the assistant reads Spotify from when there's no live connection
     /// (tests use a fake; otherwise demo data).
     pub ai_source_override: Option<Arc<dyn crate::ai::spotify::Source>>,
@@ -627,7 +647,8 @@ pub struct App {
     /// The translation of the lyrics on screen, and saved translations.
     pub translation: crate::translate_app::TranslationState,
     pub translation_store: crate::lyrics::translate::Store,
-    lyrics_client: Arc<LrclibClient>,
+    /// Every lyrics service's client and the keys (rebuilt when the contact or proxy changes).
+    pub lyrics_sources: Arc<LyricsSources>,
     /// The (contact, proxy) the LRCLIB client was made with.
     lyrics_client_for: (String, String),
     lyrics_nonce: u64,
@@ -644,6 +665,11 @@ pub struct App {
     engine_launching: bool,
     /// The playing song's lyrics timing offset, by its lyrics key (see `lyrics_song_offset`).
     song_offset: std::cell::RefCell<Option<(String, i64)>>,
+    /// The lyrics lookup going is line by line by the user's choice (no word services).
+    pub lyrics_lines_only: bool,
+    /// Where the seek bar is being dragged to, and when it was last there
+    /// (lyrics follow it while it's held).
+    pub scrub_ms: Option<(u64, Instant)>,
     /// Bumped by `invalidate`, which notes what it invalidated: answers to matching
     /// requests sent before it count as stale.
     data_gen: u64,
@@ -681,7 +707,7 @@ pub struct App {
     /// What the DJ said last, and when.
     dj_line: Option<(String, Instant)>,
     dj_clips: crate::dj::Clips,
-    dj_http: reqwest::Client,
+    pub(crate) dj_http: reqwest::Client,
     pub update: Update,
     next_update_check: Instant,
     /// Local Files as sharing sees it (kept in step with `local_tracks`).
@@ -838,6 +864,7 @@ impl App {
         let volume = settings.volume;
         let config = ConfigStore::load();
         let contact = config.lyrics().contact.clone();
+        let lyrics_cache = Arc::new(LyricsCache::new(LyricsCache::dir()));
         let proxy = settings.proxy.clone();
         crate::config::use_proxy(&proxy);
         // Every request Glass makes, for the Activity page.
@@ -866,14 +893,16 @@ impl App {
                 crate::ai::Assistant::load()
             },
             ai_undo: None,
+            ai_preview: None,
+            ai_preview_gen: 0,
             ai_source_override: None,
             playlists: crate::playlists::Playlists::load(crate::playlists::Playlists::path()),
             lyrics: LyricsState::default(),
-            lyrics_cache: Arc::new(LyricsCache::new(LyricsCache::dir())),
+            lyrics_cache: lyrics_cache.clone(),
             lyrics_choices: crate::lyrics::choices::Choices::load(crate::lyrics::choices::Choices::path()),
             translation: Default::default(),
             translation_store: crate::lyrics::translate::Store::new(crate::lyrics::translate::Store::dir()),
-            lyrics_client: LrclibClient::new(&contact, &proxy, Some(log.clone())),
+            lyrics_sources: LyricsSources::new(&contact, &proxy, Some(log.clone()), lyrics_cache, Some(lyrics_secrets())),
             lyrics_client_for: (contact, proxy),
             lyrics_nonce: 0,
             lyrics_picker: None,
@@ -885,6 +914,8 @@ impl App {
             engine_retry: None,
             engine_launching: false,
             song_offset: Default::default(),
+            lyrics_lines_only: false,
+            scrub_ms: None,
             lyrics_search_seq: 0,
             data_gen: 0,
             invalidated: Vec::new(),
@@ -1929,26 +1960,30 @@ impl App {
     pub fn lyrics_track(&self) -> Option<TrackRef> {
         if self.local_file_active() {
             let t = self.local.as_ref()?.current()?;
-            return Some(TrackRef { key: format!("local:{}", t.path.display()), title: t.title.clone(), artists: vec![t.artist.clone()], album: t.album.clone(), duration_ms: t.duration_ms });
+            return Some(TrackRef {
+                key: format!("local:{}", t.path.display()),
+                title: t.title.clone(),
+                artists: vec![t.artist.clone()],
+                album: t.album.clone(),
+                duration_ms: t.duration_ms,
+                isrc: String::new(),
+            });
         }
-        let it = self.pb.item.as_ref()?;
-        if s(it, "type") != "track" || s(it, "uri").is_empty() {
-            return None;
-        }
-        Some(TrackRef {
-            key: s(it, "uri").to_string(),
-            title: s(it, "name").to_string(),
-            artists: model::arr(it, "artists").iter().map(|a| s(a, "name").to_string()).filter(|a| !a.is_empty()).collect(),
-            album: s(&it["album"], "name").to_string(),
-            duration_ms: model::u(it, "duration_ms"),
-        })
+        crate::lyrics::track_ref(self.pb.item.as_deref()?)
     }
 
     /// Where the lyrics are: the player's position plus the timing offset.
     /// It follows seeks, pauses and resumes because it's read from the
-    /// player every frame. (Glass always plays at 1×.)
+    /// player every frame, and the seek bar while it's dragged. (Glass always
+    /// plays at 1×.)
     pub fn lyrics_position(&self) -> u64 {
-        let pos = if self.local_file_active() { self.local.as_ref().map(|l| l.position_ms()).unwrap_or(0) } else { self.pb.position() };
+        let pos = if let Some((ms, _)) = self.scrub_ms.filter(|(_, at)| at.elapsed() < Duration::from_millis(250)) {
+            ms
+        } else if self.local_file_active() {
+            self.local.as_ref().map(|l| l.position_ms()).unwrap_or(0)
+        } else {
+            self.pb.position()
+        };
         crate::lyrics::offset_position(pos, self.lyrics_offset_total())
     }
 
@@ -1990,7 +2025,7 @@ impl App {
 
     fn lyrics_request(&self, track: TrackRef) -> LyricsRequest {
         let c = self.config.lyrics();
-        LyricsRequest { track, setting: c.provider, fallback: c.fallback, nonce: self.lyrics_nonce }
+        LyricsRequest { track, setting: c.provider, fallback: c.fallback, sources: c.sources.clone(), nonce: self.lyrics_nonce }
     }
 
     /// Once per frame: drop a stale lookup when the song changes, and start
@@ -2008,6 +2043,7 @@ impl App {
         let c = self.config.lyrics();
         if let Some(r) = &self.lyrics.request
             && (r.setting, r.fallback, r.nonce) == (c.provider, c.fallback, self.lyrics_nonce)
+            && r.sources == c.sources
         {
             return;
         }
@@ -2019,43 +2055,33 @@ impl App {
     }
 
     fn start_lyrics(&mut self, req: LyricsRequest) {
-        // The user chose lyrics (or none) for this song before: use that, no lookup.
-        if let Some(choice) = self.lyrics_choices.pick(&req.track) {
-            let generation = self.lyrics.begin(req);
-            self.lyrics.finish(generation, lyrics_service::chosen(choice.as_ref()));
-            return;
+        // Line by line for this song: no word timing services.
+        let lines_only = self.lyrics_choices.lines_only(&req.track);
+        self.lyrics_lines_only = lines_only;
+        let words = if lines_only { Vec::new() } else { req.sources.clone() };
+        // The user chose lyrics (or none) for this song before: those, shown at once,
+        // and in auto the word services are asked for the same lyrics word by word.
+        let pick = self.lyrics_choices.pick(&req.track);
+        if let Some(choice) = &pick {
+            let mut chosen = lyrics_service::chosen(choice.as_ref());
+            let look = req.setting == ProviderSetting::Auto && !words.is_empty() && matches!(chosen.outcome, Outcome::Found { .. });
+            chosen.pending = look;
+            let generation = self.lyrics.begin(req.clone());
+            self.lyrics.finish(generation, chosen);
+            if !look {
+                return;
+            }
+        } else {
+            self.lyrics.begin(req.clone());
         }
-        let generation = self.lyrics.begin(req.clone());
-        let plan = lyrics_service::plan(req.setting, req.fallback);
+        let generation = self.lyrics.generation();
         // Spotify's lyrics: Spotify songs, while connected.
         let spotify = self.spotify_source();
-        let spotify_ok = if !req.track.key.starts_with("spotify:track:") {
-            Err(crate::lyrics::spotify::NOT_SPOTIFY)
-        } else if spotify.is_none() {
-            Err(crate::lyrics::spotify::NOT_CONNECTED)
-        } else {
-            Ok(())
-        };
-        let (client, cache, tx, ctx) = (self.lyrics_client.clone(), self.lyrics_cache.clone(), self.tx.clone(), self.ctx.clone());
-        let task = self.rt.spawn(async move {
-            let t = req.track;
-            let resolved = lyrics_service::resolve(
-                &plan,
-                |p| lyrics_service::availability(p, spotify_ok),
-                |p| {
-                    let (client, cache, t, spotify) = (client.clone(), cache.clone(), t.clone(), spotify.clone());
-                    async move {
-                        match p {
-                            crate::lyrics::ProviderId::Spotify => crate::lyrics::spotify::fetch(spotify, &t).await,
-                            _ => lyrics_service::fetch(p, &client, &cache, &t).await,
-                        }
-                    }
-                },
-            )
-            .await;
+        let (sources, tx, ctx) = (self.lyrics_sources.clone(), self.tx.clone(), self.ctx.clone());
+        let task = self.rt.spawn(lyrics_service::run(sources, req.setting, req.fallback, words, req.track, pick.flatten(), spotify, move |resolved| {
             let _ = tx.send(Msg::Lyrics { generation, resolved });
             ctx.request_repaint();
-        });
+        }));
         self.lyrics.running(task.abort_handle());
     }
 
@@ -2063,18 +2089,23 @@ impl App {
     pub fn offline_lyrics(&mut self, cache: LyricsCache) {
         self.lyrics_cache = Arc::new(cache);
         // Nothing listens on the discard port, so a lookup fails at once.
-        self.lyrics_client = LrclibClient::with_base("http://127.0.0.1:9", "", "", None);
+        self.lyrics_sources = LyricsSources::offline(self.lyrics_cache.clone());
         self.lyrics_client_for = (String::from("offline"), String::new());
         self.lyrics.reset();
     }
 
-    /// A new LRCLIB client when the contact or proxy changes.
+    /// New lyrics clients when the contact or proxy changes.
     fn refresh_lyrics_client(&mut self) {
         let want = (self.config.lyrics().contact.clone(), self.settings.proxy.clone());
         if want != self.lyrics_client_for {
-            self.lyrics_client = LrclibClient::new(&want.0, &want.1, Some(self.log.clone()));
+            self.lyrics_sources = LyricsSources::new(&want.0, &want.1, Some(self.log.clone()), self.lyrics_cache.clone(), Some(lyrics_secrets()));
             self.lyrics_client_for = want;
         }
+    }
+
+    /// Whether the user added a key for `p` (read once, then remembered).
+    pub fn lyrics_key_set(&self, p: ProviderId) -> bool {
+        self.lyrics_sources.key(p).is_some()
     }
 
     pub(crate) fn set_config(&mut self, key: &str, v: toml_edit::Value) {
@@ -2089,7 +2120,7 @@ impl App {
         self.lyrics_search_seq += 1;
         let generation = self.lyrics_search_seq;
         self.lyrics_picker = Some(LyricsPicker { query: q.clone(), results: None, generation });
-        let (client, tx, ctx) = (self.lyrics_client.clone(), self.tx.clone(), self.ctx.clone());
+        let (client, tx, ctx) = (self.lyrics_sources.lrclib.clone(), self.tx.clone(), self.ctx.clone());
         self.rt.spawn(async move {
             let result = client.search_text(&q).await.map_err(|e| e.to_string()).map(|mut found| {
                 // Best fits first; the rest by how close their length is.
@@ -2204,6 +2235,9 @@ impl App {
         if let Some(voice) = self.dj_voice.as_ref() {
             voice.set_volume(v);
         }
+        if let Some(voice) = self.ai_preview.as_ref().and_then(|p| p.voice.as_ref()) {
+            voice.set_volume(v);
+        }
         self.pb.volume = v;
         // Muted, the volume to come back to is the one kept (Glass opens at it, not silent).
         if self.muted_volume.is_none() {
@@ -2233,7 +2267,24 @@ impl App {
         }
     }
 
-    fn apply(&mut self, a: Action) {
+    pub(crate) fn apply(&mut self, a: Action) {
+        // Something else is played: a recommendation's preview stops.
+        if self.ai_preview.is_some()
+            && matches!(
+                a,
+                Action::PlayContext { .. }
+                    | Action::PlayUris { .. }
+                    | Action::PlayLocal { .. }
+                    | Action::PlayLocalPlaylist { .. }
+                    | Action::PlayLocalTracks { .. }
+                    | Action::Radio(_)
+                    | Action::Next
+                    | Action::Prev
+            )
+        {
+            let p = self.ai_preview.take();
+            self.ai_preview_end(p, false);
+        }
         match a {
             Action::Navigate(r) => {
                 if r != self.route {
@@ -2320,6 +2371,12 @@ impl App {
                 }
             }
             Action::TogglePlay => {
+                // During a preview: the preview stops, and what it paused plays again.
+                if self.ai_preview.is_some() {
+                    let p = self.ai_preview.take();
+                    self.ai_preview_end(p, true);
+                    return;
+                }
                 // Pausing while the DJ talks pauses the DJ.
                 if let Some(v) = self.dj_voice.as_ref() {
                     v.toggle();
@@ -2743,6 +2800,7 @@ impl App {
                 }
                 if let Some(t) = self.lyrics_track() {
                     self.lyrics_choices.forget_pick(&t);
+                    self.lyrics_choices.set_lines_only(&t, false);
                     self.song_offset.replace(None);
                 }
                 self.lyrics_nonce += 1;
@@ -2753,10 +2811,8 @@ impl App {
                 self.lyrics_nonce += 1;
                 self.lyrics_choices.set_pick(&track, Some(&record));
                 self.song_offset.replace(None);
-                // Kept by `lyrics_choices`; shown at once.
-                let resolved = lyrics_service::chosen(Some(&record));
-                let generation = self.lyrics.begin(self.lyrics_request(track));
-                self.lyrics.finish(generation, resolved);
+                // Kept by `lyrics_choices`; shown at once, with word timing looked for.
+                self.start_lyrics(self.lyrics_request(track));
             }
             Action::LyricsNoneFit => {
                 if let Some(track) = self.lyrics_track() {
@@ -2785,11 +2841,37 @@ impl App {
             }
             Action::LyricsClosePicker => self.lyrics_picker = None,
             Action::LyricsProvider(p) => self.set_config("lyrics.provider", p.name().into()),
+            Action::LyricsSources(list) => self.set_config("lyrics.sources", crate::user_config::sources_value(&list)),
+            Action::LyricsKey(p, key) => {
+                let had = self.config.lyrics().sources.contains(&p);
+                match self.lyrics_sources.set_key(p, key.as_deref()) {
+                    Ok(()) => {
+                        // A key added puts its service first in line; a key removed takes it out.
+                        let mut list = self.config.lyrics().sources.clone();
+                        list.retain(|&x| x != p);
+                        if key.is_some() {
+                            list.insert(0, p);
+                        }
+                        if had != key.is_some() || key.is_some() {
+                            self.set_config("lyrics.sources", crate::user_config::sources_value(&list));
+                        }
+                        self.toast(if key.is_some() { format!("Saved your {} key", p.label()) } else { format!("Removed your {} key", p.label()) });
+                        self.lyrics_nonce += 1;
+                    }
+                    Err(e) => self.toast(format!("Couldn't keep the key: {e}")),
+                }
+            }
             Action::LyricsOffset(ms) => {
                 let ms = ms.clamp(-crate::user_config::OFFSET_LIMIT, crate::user_config::OFFSET_LIMIT);
                 self.set_config("lyrics.offset_ms", ms.into());
             }
             Action::LyricsTranslation(m) => self.set_config("lyrics.translation", m.name().into()),
+            Action::LyricsLinesOnly(on) => {
+                if let Some(t) = self.lyrics_track() {
+                    self.lyrics_choices.set_lines_only(&t, on);
+                    self.lyrics_nonce += 1;
+                }
+            }
             Action::LyricsSongOffset(ms) => {
                 if let Some(t) = self.lyrics_track() {
                     let ms = ms.clamp(-crate::user_config::OFFSET_LIMIT, crate::user_config::OFFSET_LIMIT);
@@ -2820,6 +2902,9 @@ impl App {
             Action::AiSaveDraft { draft, replace } => self.ai_save_draft(&draft, replace),
             Action::AiDiscardDraft(id) => self.ai_discard_draft(&id),
             Action::AiEditDraft { draft, edit } => self.ai_edit_draft(&draft, edit),
+            Action::AiPreview(uri) => self.ai_preview(uri),
+            Action::AiAddPicks { card, uri, playlist } => self.ai_add_picks(&card, uri, playlist),
+            Action::AiDismissPicks(card) => self.ai_dismiss_picks(&card),
             Action::AiUndo => self.ai_undo_last(),
             Action::AiRefreshModels => {
                 self.ai.models_for.clear();
@@ -3320,6 +3405,7 @@ impl App {
         self.sync_translation();
         let (panel, settings) = (self.ai_panel_visible(), self.route == Route::Settings);
         self.ai_tick(panel, settings);
+        self.ai_preview_tick();
         self.flush_saved_queries();
         // Handed to the audio thread only when it changes (that takes a lock it shares).
         let dsp = DspState { eq_enabled: self.settings.eq_enabled, gains: self.settings.eq_gains, mono: self.settings.mono };
@@ -3787,6 +3873,7 @@ impl App {
             }
             Msg::Ai { generation, event } => self.ai_event(generation, event),
             Msg::AiWrote(w) => self.ai_wrote(w),
+            Msg::AiPreview(generation, r) => self.ai_preview_ready(generation, r),
             Msg::LyricsTranslated { key, result } => self.lyrics_translated(key, result),
             Msg::AiRegistered(id) => self.ai_registered(id),
             Msg::AiSignedIn(r) => self.ai_signed_in(r),
@@ -4271,6 +4358,12 @@ fn notify(title: &str, body: &str) {
 
 fn cover_key(uri: &str) -> String {
     uri.chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '_' }).collect()
+}
+
+/// Where the lyrics services' keys live: the system keyring, or memory in the
+/// demo and tests (which must never touch the real one).
+fn lyrics_secrets() -> Arc<dyn crate::ai::secrets::SecretStore> {
+    if std::env::var("GLASS_DEMO").is_ok() || crate::window_fx::headless() { Arc::new(crate::ai::secrets::MemoryStore::default()) } else { Arc::new(crate::ai::secrets::NamedKeyring("Glass lyrics")) }
 }
 
 #[cfg(test)]

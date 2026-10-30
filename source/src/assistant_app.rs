@@ -71,11 +71,15 @@ pub struct Wrote {
     pub refresh_player: bool,
     /// A Spotify preview: saved as this playlist, or (None) back to editing.
     pub draft: Option<(String, Option<String>)>,
+    /// Recommendations now in a playlist: (card, songs, playlist), and ones
+    /// taken back out by an undo: (songs, playlist).
+    pub picked: Option<(String, Vec<String>, String)>,
+    pub unpicked: Option<(Vec<String>, String)>,
 }
 
 impl Wrote {
     fn ok(text: impl Into<String>) -> Self {
-        Self { result: Ok(text.into()), quiet: false, tell: false, undo: None, invalidate: Vec::new(), saved: Vec::new(), refresh_player: false, draft: None }
+        Self { result: Ok(text.into()), quiet: false, tell: false, undo: None, invalidate: Vec::new(), saved: Vec::new(), refresh_player: false, draft: None, picked: None, unpicked: None }
     }
     fn err(text: impl Into<String>) -> Self {
         Self { result: Err(text.into()), ..Self::ok("") }
@@ -419,6 +423,7 @@ impl App {
                         "spotify_artist" | "spotify_album" => "looking through the catalog…",
                         "listening_history" | "check_heard" | "my_taste" => "checking what you listen to…",
                         "unheard_songs" => "looking for songs you don't have…",
+                        "recommend_songs" => "picking songs…",
                         "now_playing" | "player" => "working the player…",
                         _ => "working…",
                     }
@@ -428,6 +433,10 @@ impl App {
             AiEvent::Turn(Event::Draft(d)) => {
                 self.ai.next_id = self.ai.next_id.max(d.id.trim_start_matches('d').parse().unwrap_or(0));
                 self.ai.upsert_draft(d);
+            }
+            AiEvent::Turn(Event::Picks(p)) => {
+                self.ai.next_id = self.ai.next_id.max(p.id.trim_start_matches('r').parse().unwrap_or(0));
+                self.ai.picks.push(p);
             }
             AiEvent::Turn(Event::Approval(a)) => {
                 self.ai.next_id = self.ai.next_id.max(a.id.trim_start_matches('a').parse().unwrap_or(0));
@@ -704,8 +713,9 @@ impl App {
                             .await
                             .map(|_| format!("Undone: took the {} added song{} back out of “{name}”.", added.len(), plural(added.len())))
                     };
+                    let unpicked = (!created).then(|| (added.clone(), id.clone()));
                     match r {
-                        Ok(t) => Wrote { tell: true, invalidate: vec![id.clone(), "/me/playlists".into()], draft: draft.map(|d| (d, None)), ..Wrote::ok(t) },
+                        Ok(t) => Wrote { tell: true, invalidate: vec![id.clone(), "/me/playlists".into()], draft: draft.map(|d| (d, None)), unpicked, ..Wrote::ok(t) },
                         Err(e) => Wrote { tell: true, ..Wrote::err(format!("Couldn't undo: {e}")) },
                     }
                 });
@@ -778,7 +788,14 @@ impl App {
         let c = &self.ai.catalog;
         let (uri, name, album) = (s(t, "uri"), s(t, "name"), &t["album"]);
         let by = t["artists"].as_array().map(|a| a.iter().map(|x| s(x, "name")).collect::<Vec<_>>().join(", ")).unwrap_or_default();
-        c.add(Item { uri: uri.into(), name: name.into(), by: by.clone(), album: s(album, "name").into(), duration_ms: t["duration_ms"].as_u64().unwrap_or(0) });
+        c.add(Item {
+            uri: uri.into(),
+            name: name.into(),
+            by: by.clone(),
+            album: s(album, "name").into(),
+            duration_ms: t["duration_ms"].as_u64().unwrap_or(0),
+            preview: t["preview_url"].as_str().map(str::to_string),
+        });
         if !s(album, "uri").is_empty() {
             c.add(Item { uri: s(album, "uri").into(), name: s(album, "name").into(), by: by.clone(), ..Default::default() });
         }
@@ -965,6 +982,18 @@ impl App {
                 } else {
                     self.ai.note(e.clone());
                 }
+            }
+        }
+        if let Some((card, uris, playlist)) = &w.picked
+            && let Some(p) = self.ai.picks.iter_mut().find(|p| &p.id == card)
+        {
+            for s in p.songs.iter_mut().filter(|s| uris.contains(&s.uri) && !s.added_to.contains(playlist)) {
+                s.added_to.push(playlist.clone());
+            }
+        }
+        if let Some((uris, playlist)) = &w.unpicked {
+            for s in self.ai.picks.iter_mut().flat_map(|p| p.songs.iter_mut()).filter(|s| uris.contains(&s.uri)) {
+                s.added_to.retain(|x| x != playlist);
             }
         }
         if let Some(u) = w.undo {
@@ -1283,6 +1312,135 @@ impl App {
                 ..Wrote::ok(text)
             }
         });
+    }
+
+    // ------------------------------------------------------------ recommendations
+
+    /// ▶ on a recommendation: its 30-second preview (▶ again stops it).
+    /// What's playing pauses for it, and plays again when it ends.
+    pub fn ai_preview(&mut self, uri: String) {
+        let was = self.ai_preview.take();
+        if was.as_ref().is_some_and(|p| p.uri == uri) {
+            return self.ai_preview_end(was, true);
+        }
+        // From one preview to another: what the first paused still comes back after.
+        let mut resume = was.as_ref().is_some_and(|p| p.resume);
+        drop(was);
+        let Some(src) = self.ai_source() else {
+            self.ai.note("Spotify isn't connected, so there's no preview to play.");
+            return;
+        };
+        if !resume && (self.pb.is_playing || self.local.as_ref().is_some_and(|l| l.is_playing())) {
+            self.apply(crate::app::Action::TogglePlay);
+            resume = true;
+        }
+        self.ai_preview_gen += 1;
+        let generation = self.ai_preview_gen;
+        self.ai_preview = Some(crate::ai::picks::Preview { uri: uri.clone(), generation, voice: None, started: None, resume });
+        let (catalog, tx, ctx, volume, http) = (self.ai.catalog.clone(), self.tx.clone(), self.ctx.clone(), self.pb.volume, self.dj_http.clone());
+        self.rt.spawn(async move {
+            let r = match crate::ai::picks::clip(src.as_ref(), &http, &catalog, &uri).await {
+                // Opening the output takes a moment: not on the UI thread.
+                Ok(Some(clip)) => tokio::task::spawn_blocking(move || crate::dj::Voice::play(&[Arc::new(clip)], volume)).await.map_err(|e| e.to_string()),
+                Ok(None) => Err("Spotify has no preview of that song".to_string()),
+                Err(e) => Err(e),
+            };
+            let _ = tx.send(Msg::AiPreview(generation, r));
+            ctx.request_repaint();
+        });
+    }
+
+    pub fn ai_preview_ready(&mut self, generation: u64, r: Result<Option<crate::dj::Voice>, String>) {
+        // A preview stopped (or replaced) while loading: dropping its voice stops it.
+        let Some(p) = self.ai_preview.as_mut().filter(|p| p.generation == generation) else { return };
+        match r {
+            Ok(Some(v)) => {
+                p.voice = Some(v);
+                p.started = Some(std::time::Instant::now());
+            }
+            Ok(None) | Err(_) => {
+                if let Err(e) = r {
+                    self.ai.note(format!("{e}."));
+                }
+                let p = self.ai_preview.take();
+                self.ai_preview_end(p, true);
+            }
+        }
+    }
+
+    /// A preview stops; with `resume`, what it paused plays again.
+    pub(crate) fn ai_preview_end(&mut self, p: Option<crate::ai::picks::Preview>, resume: bool) {
+        let Some(p) = p else { return };
+        drop(p.voice);
+        if resume && p.resume && !(self.pb.is_playing || self.local.as_ref().is_some_and(|l| l.is_playing())) {
+            self.apply(crate::app::Action::TogglePlay);
+        }
+    }
+
+    /// A preview that played to its end stops.
+    pub fn ai_preview_tick(&mut self) {
+        if self.ai_preview.as_ref().is_some_and(|p| p.done()) {
+            let p = self.ai_preview.take();
+            self.ai_preview_end(p, true);
+        }
+    }
+
+    /// The name of one of the user's playlists (bare ID), as the assistant or the library knows it.
+    pub fn ai_playlist_name(&mut self, id: &str) -> String {
+        self.ai
+            .catalog
+            .get(&format!("spotify:playlist:{id}"))
+            .map(|i| i.name)
+            .filter(|n| !n.is_empty())
+            .or_else(|| crate::ui::menus::writable_playlists(self).iter().find(|p| s(p, "id") == id).map(|p| s(p, "name").to_string()))
+            .unwrap_or_else(|| "your playlist".into())
+    }
+
+    /// "+ add" on a recommendation (`uri` None: "add all"): into `playlist`
+    /// (a bare ID), leaving out what it already has. The assistant hears of it.
+    pub fn ai_add_picks(&mut self, card: &str, uri: Option<String>, playlist: String) {
+        let Some(p) = self.ai.picks.iter().find(|p| p.id == card) else { return };
+        let songs: Vec<(String, String, String)> = p
+            .songs
+            .iter()
+            .filter(|x| uri.as_ref().is_none_or(|u| &x.uri == u) && !x.added_to.contains(&playlist))
+            .map(|x| {
+                let it = self.ai.catalog.get(&x.uri).unwrap_or_default();
+                (x.uri.clone(), it.name, it.by)
+            })
+            .collect();
+        if songs.is_empty() {
+            return;
+        }
+        let name = self.ai_playlist_name(&playlist);
+        let card = card.to_string();
+        self.ai_spotify_job(None, move |src| async move {
+            match crate::ai::picks::add(src.as_ref(), &playlist, &songs).await {
+                Ok(a) => {
+                    let title = |u: &String| songs.iter().find(|x| &x.0 == u).map(|x| format!("“{}”", x.1)).unwrap_or_else(|| "That song".into());
+                    let text = match (a.uris.len(), a.already.len()) {
+                        (0, 1) => format!("{} is already in “{name}”.", title(&a.already[0])),
+                        (0, _) => format!("Those songs are already in “{name}”."),
+                        (1, 0) => format!("Added {} to “{name}”.", title(&a.uris[0])),
+                        (n, 0) => format!("Added {n} songs to “{name}”."),
+                        (n, k) => format!("Added {n} song{} to “{name}” ({k} already there).", plural(n)),
+                    };
+                    let picked = Some((card, a.uris.iter().chain(&a.already).cloned().collect(), playlist.clone()));
+                    let undo = (!a.uris.is_empty()).then(|| Some(AiUndo::SpotifyPlaylist { id: playlist.clone(), name, created: false, added: a.uris }));
+                    Wrote { undo, invalidate: vec!["/me/playlists".into(), playlist], picked, ..Wrote::ok(text) }
+                }
+                Err(e) => Wrote::err(format!("Couldn't add to “{name}”: {e}.")),
+            }
+        });
+    }
+
+    pub fn ai_dismiss_picks(&mut self, card: &str) {
+        let Some(i) = self.ai.picks.iter().position(|p| p.id == card) else { return };
+        let p = self.ai.picks.remove(i);
+        if self.ai_preview.as_ref().is_some_and(|x| p.songs.iter().any(|s| s.uri == x.uri)) {
+            let x = self.ai_preview.take();
+            self.ai_preview_end(x, true);
+        }
     }
 
     // ------------------------------------------------------------ account

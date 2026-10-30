@@ -83,10 +83,11 @@ fn retype(h: &mut Harness<'static, App>, value: &str, text: &str) {
 }
 
 /// Runs frames until the lyrics lookup (on the app's runtime) has answered.
+/// Waits for the final answer (not an early one while word timing is looked for).
 fn settle_lyrics(h: &mut Harness<'static, App>) {
     for _ in 0..200 {
         h.run_steps(1);
-        if matches!(h.state().lyrics.status, Status::Done(_)) {
+        if matches!(&h.state().lyrics.status, Status::Done(r) if !r.pending) {
             return;
         }
         std::thread::sleep(std::time::Duration::from_millis(10));
@@ -192,7 +193,7 @@ fn now_playing_and_lyrics() {
     assert_eq!(h.state().route, Route::NowPlaying, "L opens now playing");
     assert_eq!(h.state().np_view, NpView::Lyrics);
     settle_lyrics(&mut h);
-    assert!(matches!(outcome(&h), Outcome::Found { lyrics, .. } if lyrics.timing == Timing::Word));
+    assert!(matches!(outcome(&h), Outcome::Found { lyrics, .. } if lyrics.timing >= Timing::Word));
 
     click(&mut h, "City lights are slowly fading");
     assert_eq!(h.state().pb.progress_ms, 52_000, "clicking a lyric line seeks to it");
@@ -278,7 +279,10 @@ fn spotify_lyrics_are_a_source_again() {
     let mut h = harness(vec2(1280.0, 820.0), |a| a.route = Route::NowPlaying);
     spotify_with_lyrics(&mut h);
     settle_lyrics(&mut h);
-    assert!(matches!(outcome(&h), Outcome::Found { lyrics, .. } if lyrics.source.provider == crate::lyrics::ProviderId::Lrclib), "LRCLIB first");
+    // Auto: LRCLIB's lines (found first), upgraded to lrc.red's word timing.
+    assert!(matches!(outcome(&h), Outcome::Found { lyrics, .. } if lyrics.source.provider == crate::lyrics::ProviderId::LrcRed && lyrics.timing >= Timing::Word));
+    let Status::Done(res) = &h.state().lyrics.status else { panic!() };
+    assert_eq!(res.tried[0], (crate::lyrics::ProviderId::Lrclib, "found"), "LRCLIB first");
 
     // Spotify only: its lyrics, through Glass's Spotify connection.
     std::fs::write(home().join(".config/glass/config.toml"), "[lyrics]\nprovider = \"spotify\"\n").unwrap();
@@ -292,10 +296,10 @@ fn spotify_lyrics_are_a_source_again() {
     h.state_mut().settings_query = "lyrics".into();
     h.run_steps(3);
     click(&mut h, "LRCLIB");
-    assert_eq!(h.state().config.lyrics().provider, ProviderSetting::Lrclib);
+    assert_eq!(h.state().config.lyrics().provider, ProviderSetting::Only(crate::lyrics::ProviderId::Lrclib));
     assert!(config_file().contains("provider = \"lrclib\""));
     click(&mut h, "Spotify");
-    assert_eq!(h.state().config.lyrics().provider, ProviderSetting::Spotify);
+    assert_eq!(h.state().config.lyrics().provider, ProviderSetting::Only(crate::lyrics::ProviderId::Spotify));
 }
 
 #[test]
@@ -1250,6 +1254,48 @@ fn a_spotify_preview_saves_with_one_click_and_undoes() {
 }
 
 #[test]
+fn recommendations_add_with_a_click_and_undo() {
+    use serde_json::json;
+    let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let songs = json!(["cat", "remember", "shyness", "windy"].iter().map(|i| json!({ "id": format!("spotify:track:{i}"), "why": "same era" })).collect::<Vec<_>>());
+    let replies = vec![
+        models_reply(),
+        tool_calls(&[("c1", "spotify_album", json!({ "album_id": "timely" }))]),
+        tool_calls(&[("c2", "recommend_songs", json!({ "title": "For Night Drive", "songs": songs, "for_playlist_id": "mine", "count": 3, "new_only": false }))]),
+        (200, sse("Here are three for Night Drive.", &[])),
+    ];
+    let (mut h, seen, _) = ai_harness(replies, true);
+    let fake = fake_spotify(&mut h);
+    settle(&mut h, |a| matches!(a.ai.models, Models::Ready(_)));
+    ask(&mut h, "recommend songs for my night drive playlist");
+    settle(&mut h, |a| !a.ai.busy());
+    let card = h.state().ai.picks[0].clone();
+    assert_eq!(card.songs.len(), 3, "Cat's Eye is already in the playlist");
+    assert!(seen.lock().unwrap()[3].to_string().contains("Cat's Eye — Anri"), "the model hears what was left out");
+    h.get_by_label("Remember Summer Days — Anri");
+    assert!(sent(&fake).is_empty(), "showing recommendations changes nothing");
+
+    // One song, then the rest.
+    h.state_mut().act(crate::app::Action::AiAddPicks { card: card.id.clone(), uri: Some("spotify:track:remember".into()), playlist: "mine".into() });
+    settle(&mut h, |a| a.ai.picks[0].songs[0].added_to == ["mine"]);
+    assert_eq!(sent(&fake), ["POST /playlists/mine/tracks"]);
+    assert_eq!(fake.sent.lock().unwrap()[0].2.as_ref().unwrap()["uris"], json!(["spotify:track:remember"]));
+    assert!(h.state().ai.transcript.iter().any(|l| matches!(l, Line::Note(n) if n == "Added “Remember Summer Days” to “Night Drive”.")), "{:?}", h.state().ai.transcript);
+    h.run_steps(3);
+    h.get_by_label("added ✓");
+    click(&mut h, "add all to “Night Drive”");
+    settle(&mut h, |a| a.ai.picks[0].songs.iter().all(|x| x.added_to == ["mine"]));
+    assert_eq!(fake.sent.lock().unwrap()[1].2.as_ref().unwrap()["uris"], json!(["spotify:track:shyness", "spotify:track:windy"]));
+    assert!(h.state().ai.history.iter().any(|m| m.to_string().contains("Added 2 songs to “Night Drive”")), "the assistant hears of it");
+
+    // Undo takes the last two back out, and the card shows them as not added.
+    h.get_by_label("undo").click();
+    settle(&mut h, |a| a.ai.picks[0].songs[2].added_to.is_empty());
+    assert_eq!(sent(&fake)[2], "DELETE /playlists/mine/tracks");
+    assert!(h.state().ai.picks[0].songs[0].added_to == ["mine"], "the first add stays");
+}
+
+#[test]
 fn a_lyrics_pick_sticks_to_the_song() {
     let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let mut h = harness(vec2(1280.0, 820.0), |_| {});
@@ -1277,6 +1323,51 @@ fn a_lyrics_pick_sticks_to_the_song() {
     h.state_mut().act(crate::app::Action::LyricsRetry);
     h.run_steps(2);
     assert!(h.state().lyrics_track().is_some_and(|t| h.state().lyrics_choices.pick(&t).is_none()));
+}
+
+#[test]
+fn a_song_keeps_lrclibs_lines_or_takes_word_timing() {
+    use crate::lyrics::{Match, ProviderId, sample};
+    let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let mut h = harness(vec2(1280.0, 820.0), |a| {
+        a.route = Route::NowPlaying;
+        a.np_view = NpView::Lyrics;
+    });
+    settle_lyrics(&mut h);
+    let shown = |h: &Harness<'static, App>| match outcome(h) {
+        Outcome::Found { lyrics, how } => (lyrics.source.provider, lyrics.timing, how),
+        o => panic!("{o:?}"),
+    };
+    assert_eq!(shown(&h).0, ProviderId::LrcRed, "word timing over LRCLIB's lines");
+    h.run_steps(2);
+    // This song line by line, with LRCLIB's lyrics: remembered for it.
+    h.get_by_label("LRCLIB lines").click();
+    h.run_steps(2);
+    settle_lyrics(&mut h);
+    assert_eq!(shown(&h).0, ProviderId::Lrclib);
+    assert!(h.state().lyrics_track().is_some_and(|t| h.state().lyrics_choices.lines_only(&t)));
+    h.run_steps(2);
+    h.get_by_label("word timing").click();
+    h.run_steps(2);
+    settle_lyrics(&mut h);
+    assert_eq!(shown(&h).0, ProviderId::LrcRed);
+
+    // Lyrics picked by hand are timed word by word too, when it's the same lyrics.
+    let lrc: String =
+        sample::LINES.iter().enumerate().map(|(i, l)| format!("[{:02}:{:02}.{:02}] {l}\n", sample::start(i) / 60_000, sample::start(i) / 1000 % 60, sample::start(i) % 1000 / 10)).collect();
+    let record = crate::lyrics::parse::record(&serde_json::json!({ "id": 77, "trackName": "Golden Hour", "artistName": "Aurora Lane", "duration": 214, "syncedLyrics": lrc })).unwrap();
+    h.state_mut().act(Action::LyricsPick(std::sync::Arc::new(record)));
+    h.run_steps(1);
+    assert_eq!(shown(&h), (ProviderId::Lrclib, Timing::Line, Match::Manual), "the pick shows at once");
+    settle_lyrics(&mut h);
+    assert_eq!(shown(&h), (ProviderId::LrcRed, Timing::Syllable, Match::Manual), "then word by word, still the user's pick");
+    // And other lyrics picked by hand stay as they are.
+    let record = crate::lyrics::parse::record(&serde_json::json!({ "id": 78, "trackName": "Golden Hour", "artistName": "Aurora Lane", "duration": 214, "syncedLyrics": "[00:52.00] Other words\n[00:57.20] entirely\n[01:02.40] than the song\n[01:07.60] has" })).unwrap();
+    h.state_mut().act(Action::LyricsPick(std::sync::Arc::new(record)));
+    settle_lyrics(&mut h);
+    assert_eq!(shown(&h), (ProviderId::Lrclib, Timing::Line, Match::Manual));
+    h.state_mut().act(Action::LyricsRetry);
+    h.run_steps(2);
 }
 
 #[test]
@@ -1607,12 +1698,9 @@ fn albums_and_artists_download_from_share_too() {
     assert!(toasted(&h, "Saving 3 songs from “Aurora Lane - Quiet Hours” as M4A"));
 }
 
-#[test]
-fn now_playing_takes_the_album_colors() {
-    let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let mut h = harness(vec2(1280.0, 820.0), |a| a.route = Route::NowPlaying);
-    // The harness draws with its own context, which doesn't have the demo's covers: give
-    // it this song's (pink to indigo, like the demo's first), and start over.
+/// Gives the harness's context the playing song's cover (pink to indigo, like the
+/// demo's first: the harness doesn't have the demo's covers) and waits for its colors.
+fn album_cover(h: &mut Harness<'static, App>) -> crate::palette::Palette {
     let uri = h.state_mut().now_cover(64).expect("the playing song's cover");
     let img = image::RgbImage::from_fn(64, 64, |x, y| {
         let t = (x + y) as f32 / 126.0;
@@ -1631,7 +1719,14 @@ fn now_playing_takes_the_album_colors() {
         std::thread::sleep(std::time::Duration::from_millis(10));
         h.run_steps(1);
     }
-    let p = h.state().album_colors.shown().expect("the playing cover's colors");
+    h.state().album_colors.shown().expect("the playing cover's colors")
+}
+
+#[test]
+fn now_playing_takes_the_album_colors() {
+    let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let mut h = harness(vec2(1280.0, 820.0), |a| a.route = Route::NowPlaying);
+    let p = album_cover(&mut h);
     // The demo cover runs from pink to indigo.
     let [r, g, b] = p.accent.to_rgb();
     assert!(r > g + 30 && b > g + 30, "a pink-violet accent: {:?}", [r, g, b]);
@@ -1640,8 +1735,35 @@ fn now_playing_takes_the_album_colors() {
     // At strength 0 the palette changes nothing.
     let mut theme = h.state().theme.theme().clone();
     let before = theme.accent;
-    p.apply(&mut theme, 0.0);
+    p.apply(&mut theme, 0.0, Default::default());
     assert_eq!(theme.accent, before);
+}
+
+#[test]
+fn album_colors_on_every_page_by_choice() {
+    let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    // Other pages keep the theme's colors: no wash behind them.
+    let mut h = harness(vec2(1280.0, 820.0), |a| a.route = Route::Home);
+    album_cover(&mut h);
+    h.run_steps(4);
+    assert!(!h.state().album_colors.washed());
+    // The theme panel's album tab: "everywhere", as on iPhone.
+    h.state_mut().theme_panel = true;
+    h.state_mut().theme_tab = 3;
+    h.run_steps(2);
+    click(&mut h, "everywhere");
+    assert!(h.state().settings.album_everywhere);
+    h.run_steps(4);
+    assert!(h.state().album_colors.washed(), "the wash is behind Home now");
+    // Without the background part, no wash.
+    let mut h = harness(vec2(1280.0, 820.0), |a| {
+        a.route = Route::Home;
+        a.settings.album_everywhere = true;
+        a.settings.album_parts.background = false;
+    });
+    album_cover(&mut h);
+    h.run_steps(4);
+    assert!(!h.state().album_colors.washed());
 }
 
 /// Every page and panel at the smallest window, zoomed in up to 2× (⌘+): egui's
@@ -1701,6 +1823,13 @@ fn every_page_lays_out_at_any_zoom() {
                 h.run_steps(2);
                 h.state_mut().route = route;
                 h.run_steps(4);
+                // Each of the theme panel's tabs.
+                for tab in 1..4u8 {
+                    if panel {
+                        h.state_mut().theme_tab = tab;
+                        h.run_steps(2);
+                    }
+                }
             })
             .join();
             if r.is_err() {

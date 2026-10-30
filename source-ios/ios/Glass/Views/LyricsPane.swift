@@ -14,8 +14,9 @@ struct LyricsPane: View {
         Group {
             if let m = store.lyrics {
                 VStack(alignment: .leading, spacing: 8) {
-                    HStack {
-                        Spacer()
+                    HStack(spacing: 0) {
+                        Spacer(minLength: 0)
+                        if m.state == .found { Credits(credits: m.credits) }
                         Text(m.header).gFont(12).foregroundStyle(look.muted).lineLimit(1)
                     }
                     // On its own line (full width, wraps): "from Japanese · Apple, on this
@@ -87,10 +88,33 @@ struct LyricsPane: View {
     }
 }
 
-/// The current position in lyrics time: the player's position plus the offsets
-/// (positive shows lyrics earlier).
+/// Where the lyrics are from, before the header: a link for services that ask for
+/// credit (lrc.red, Spicy Lyrics' syncers), else the provider's name ("netease · ").
+struct Credits: View {
+    let credits: [CreditModel]
+    var body: some View {
+        let look = Look.shared
+        ForEach(credits.indices, id: \.self) { i in
+            credit(credits[i], look)
+            Text(" · ").gFont(12).foregroundStyle(look.muted)
+        }
+    }
+
+    @ViewBuilder private func credit(_ c: CreditModel, _ look: Look) -> some View {
+        if let s = c.url, let u = URL(string: s) {
+            SwiftUI.Link(destination: u) { Text(c.text).gFont(12).foregroundStyle(look.sub).lineLimit(1) }
+                .accessibilityHint("Opens \(u.host() ?? "the source")")
+        } else {
+            Text(c.text).gFont(12).foregroundStyle(look.sub).lineLimit(1)
+        }
+    }
+}
+
+/// The current position in lyrics time: the player's position (or the seek bar
+/// while it's dragged) plus the offsets (positive shows lyrics earlier).
 @MainActor private func lyricsPosition(_ store: Store, _ m: LyricsModel, at date: Date) -> UInt64 {
-    let p = Int64(store.position(at: date)) + m.globalOffsetMs + m.songOffsetMs
+    let base = store.scrubPosition(at: date) ?? store.position(at: date)
+    let p = Int64(base) + m.globalOffsetMs + m.songOffsetMs
     return UInt64(max(p, 0))
 }
 
@@ -99,19 +123,39 @@ private func seekTarget(_ start: UInt64, _ m: LyricsModel) -> UInt64 {
     UInt64(max(Int64(start) - (m.globalOffsetMs + m.songOffsetMs), 0))
 }
 
-private func lineAt(_ lines: [LyricLine], _ pos: UInt64) -> Int? {
-    lines.lastIndex { $0.startMs <= pos }
+/// The lines being sung at `pos` (more than one where voices overlap) and the one
+/// the view follows: the first of those, else the last that started. The core
+/// worked out each line's `activeEndMs` (shared Rust `Lyrics::active`/`line_at`).
+private func singing(_ lines: [LyricLine], _ pos: UInt64) -> (focus: Int?, active: [Int]) {
+    var lo = 0, hi = lines.count
+    while lo < hi {
+        let mid = (lo + hi) / 2
+        if lines[mid].startMs <= pos { lo = mid + 1 } else { hi = mid }
+    }
+    let active = (0..<lo).filter { pos < lines[$0].activeEndMs }
+    return (active.first ?? (lo > 0 ? lo - 1 : nil), active)
+}
+
+/// How much of each word or syllable is sung at `pos`, 0 to 1 (the core worked out each end).
+private func progress(_ tokens: [LyricToken], _ pos: UInt64) -> [Double] {
+    tokens.map { t in
+        pos <= t.startMs ? 0 : min(Double(pos - t.startMs) / Double(max(t.endMs - t.startMs, 1)), 1)
+    }
 }
 
 /// Synced lyrics: the current line at the theme's anchor (top / upper / middle),
-/// lines gliding (or fading, popping) into place, word/syllable emphasis in 6 steps,
-/// distance fade, tap a line to play from it, drag to read ahead ("↓ back to current line").
+/// lines gliding (or fading, popping) into place, every line being sung lit (voices
+/// can overlap), word/syllable timing swept across each word as it's sung, backing
+/// vocals under their line, a duet's voices on two sides, distance fade, tap a line
+/// to play from it, drag to read ahead ("↓ back to current line").
 struct SyncedLyrics: View {
     @Environment(Store.self) private var store
     @Environment(\.accessibilityReduceMotion) private var systemReduce
+    @ScaledMetric(relativeTo: .title3) private var unit: CGFloat = 1
     let m: LyricsModel
     let embedded: Bool
     @State private var current: Int?
+    @State private var active: [Int] = []
     @State private var manual = false
 
     var body: some View {
@@ -119,15 +163,17 @@ struct SyncedLyrics: View {
         let style = look.lyrics
         let anchorY: CGFloat = style.position == "top" ? 0.2 : style.position == "middle" ? 0.5 : 0.38
         let reduce = systemReduce || look.reduceMotion
+        let duet = m.lines.contains { $0.voice == .other }
         GeometryReader { g in
-            let size = min(max(g.size.width * 0.05 * CGFloat(style.size) * 1.6, 15), 44).rounded()
+            // Dynamic Type scales the lyrics too (a larger cap for the accessibility sizes).
+            let size = min(max(g.size.width * 0.05 * CGFloat(style.size) * 1.6, 15) * unit, 44 * max(unit, 1)).rounded()
             let gap = size * 0.55 * CGFloat(style.spacing)
             ScrollViewReader { proxy in
                 ScrollView {
-                    VStack(alignment: hAlign(style.align), spacing: gap) {
+                    VStack(spacing: gap) {
                         Color.clear.frame(height: g.size.height * anchorY)
                         ForEach(Array(m.lines.enumerated()), id: \.offset) { i, line in
-                            LyricRow(m: m, index: i, line: line, size: size, current: current, height: g.size.height)
+                            LyricRow(m: m, index: i, line: line, size: size, focus: current, lit: active.contains(i), duet: duet, reduce: reduce)
                                 .id(i)
                                 .onTapGesture {
                                     store.core.seek(positionMs: seekTarget(line.startMs, m))
@@ -138,7 +184,7 @@ struct SyncedLyrics: View {
                         }
                         Color.clear.frame(height: g.size.height * (1 - anchorY))
                     }
-                    .frame(maxWidth: .infinity, alignment: frameAlign(style.align))
+                    .frame(maxWidth: .infinity)
                     .padding(.horizontal, 4)
                 }
                 .scrollIndicators(.hidden)
@@ -149,62 +195,64 @@ struct SyncedLyrics: View {
                     if manual {
                         Button {
                             manual = false
-                            if let c = current { withAnimation(.easeOut(duration: 0.4)) { proxy.scrollTo(c, anchor: UnitPoint(x: 0.5, y: anchorY)) } }
+                            if let c = current { withAnimation(reduce ? nil : .easeOut(duration: 0.4)) { proxy.scrollTo(c, anchor: UnitPoint(x: 0.5, y: anchorY)) } }
                         } label: {
                             Text("↓ back to current line").gFont(12.5).foregroundStyle(look.foreground)
                                 .padding(.horizontal, 14).padding(.vertical, 8).panel()
                         }
                         .buttonStyle(.plain)
                         .padding(.bottom, 8)
+                        .accessibilityLabel("Back to the current line")
                     }
                 }
                 .background(
+                    // Which lines are sung: ten looks a second (the words themselves are drawn per frame by their rows).
                     TimelineView(.periodic(from: .now, by: 0.1)) { ctx in
-                        let i = lineAt(m.lines, lyricsPosition(store, m, at: ctx.date))
-                        Color.clear.onChange(of: i, initial: true) { _, new in
-                            guard new != current else { return }
-                            current = new
-                            guard !manual, let new else { return }
-                            let secs = 0.55 / max(Double(style.speed), 0.1)
-                            if style.animation == "none" {
-                                proxy.scrollTo(new, anchor: UnitPoint(x: 0.5, y: anchorY))
-                            } else if reduce || style.animation == "fade" {
-                                withAnimation(.easeInOut(duration: secs * 0.6)) { proxy.scrollTo(new, anchor: UnitPoint(x: 0.5, y: anchorY)) }
-                            } else if style.animation == "pop" {
-                                withAnimation(.spring(response: secs, dampingFraction: 0.62)) { proxy.scrollTo(new, anchor: UnitPoint(x: 0.5, y: anchorY)) }
-                            } else {
-                                withAnimation(.easeOut(duration: secs)) { proxy.scrollTo(new, anchor: UnitPoint(x: 0.5, y: anchorY)) }
+                        let now = singing(m.lines, lyricsPosition(store, m, at: ctx.date))
+                        Color.clear
+                            .onChange(of: now.active, initial: true) { _, new in active = new }
+                            .onChange(of: now.focus, initial: true) { _, new in
+                                guard new != current else { return }
+                                current = new
+                                guard !manual, let new else { return }
+                                let secs = 0.55 / max(Double(style.speed), 0.1)
+                                if style.animation == "none" {
+                                    proxy.scrollTo(new, anchor: UnitPoint(x: 0.5, y: anchorY))
+                                } else if reduce || style.animation == "fade" {
+                                    withAnimation(.easeInOut(duration: secs * 0.6)) { proxy.scrollTo(new, anchor: UnitPoint(x: 0.5, y: anchorY)) }
+                                } else if style.animation == "pop" {
+                                    withAnimation(.spring(response: secs, dampingFraction: 0.62)) { proxy.scrollTo(new, anchor: UnitPoint(x: 0.5, y: anchorY)) }
+                                } else {
+                                    withAnimation(.easeOut(duration: secs)) { proxy.scrollTo(new, anchor: UnitPoint(x: 0.5, y: anchorY)) }
+                                }
                             }
-                        }
                     }
                 )
             }
         }
         .frame(minHeight: embedded ? 420 : 200)
     }
-
-    private func hAlign(_ a: String) -> HorizontalAlignment { a == "left" ? .leading : a == "right" ? .trailing : .center }
-    private func frameAlign(_ a: String) -> Alignment { a == "left" ? .leading : a == "right" ? .trailing : .center }
 }
 
-/// One line: emphasis for the current line, distance fade for the rest, word or
-/// syllable highlighting when (and only when) the provider timed them, and the
-/// translation under it ("below") or in its place ("only").
+/// One line: lit while it's sung, faded with distance otherwise; word or syllable
+/// timing swept across each word (only when the provider timed them); backing vocals
+/// under it; the translation under it ("below") or in its place ("only").
 struct LyricRow: View {
-    @GlassAccent private var accent
     @Environment(Store.self) private var store
     let m: LyricsModel
     let index: Int
     let line: LyricLine
     let size: CGFloat
-    let current: Int?
-    let height: CGFloat
+    let focus: Int?
+    /// Being sung now.
+    let lit: Bool
+    let duet: Bool
+    let reduce: Bool
 
     var body: some View {
         let look = Look.shared
         let style = look.lyrics
-        let isCurrent = current == index
-        let dist = Double(abs((current ?? -10) - index))
+        let dist = Double(abs((focus ?? -10) - index))
         let fade = 1 - min(dist / 6, 1) * Double(style.fade)
         let currentColor = look.lyricsCurrent
         let otherColor = look.lyricsOther.opacity(max(fade, 0.18))
@@ -213,27 +261,41 @@ struct LyricRow: View {
         let text = only ? translated! : line.text
         VStack(alignment: hAlign, spacing: size * 0.14) {
             if text.isEmpty {
-                Text("♪").font(.system(size: size * 0.8, design: .monospaced)).foregroundStyle(isCurrent ? currentColor : otherColor)
-            } else if isCurrent, !only, !line.tokens.isEmpty {
-                TimelineView(.periodic(from: .now, by: 0.08)) { ctx in
-                    words(at: lyricsPosition(store, m, at: ctx.date), current: currentColor)
-                        .font(font(bold: style.bold))
-                }
+                Text("♪").font(.system(size: size * 0.8, design: .monospaced)).foregroundStyle(lit ? currentColor : otherColor)
+            } else if lit, !only, !line.tokens.isEmpty {
+                SungText(m: m, tokens: line.tokens, font: font(bold: style.bold), base: currentColor, reduce: reduce)
             } else {
                 Text(text)
-                    .font(font(bold: isCurrent && style.bold))
-                    .foregroundStyle(isCurrent ? currentColor : otherColor)
+                    .font(font(bold: lit && style.bold))
+                    .foregroundStyle(lit ? currentColor : otherColor)
+            }
+            if let b = line.backing, !only {
+                let small = Font.system(size: (size * 0.66).rounded(), weight: .regular, design: .monospaced)
+                if lit, !b.tokens.isEmpty {
+                    SungText(m: m, tokens: b.tokens, font: small, base: currentColor.opacity(0.8), reduce: reduce)
+                } else {
+                    Text(b.text).font(small).foregroundStyle(lit ? currentColor.opacity(0.75) : otherColor.opacity(0.75))
+                }
             }
             if m.translationMode == .below, let t = translated, !t.isEmpty, t.lowercased() != line.text.lowercased() {
-                Text(t).font(.system(size: (size * 0.58).rounded(), design: .monospaced)).foregroundStyle(look.muted.opacity(isCurrent ? 1 : fade))
+                Text(t).font(.system(size: (size * 0.58).rounded(), design: .monospaced)).foregroundStyle(look.muted.opacity(lit ? 1 : fade))
             }
         }
         .multilineTextAlignment(textAlign)
-        .scaleEffect(isCurrent ? 1 : 0.98, anchor: anchor)
-        .animation(.easeOut(duration: 0.8 * 0.55 / max(Double(style.speed), 0.1)), value: isCurrent)
+        .frame(maxWidth: .infinity, alignment: frameAlign)
+        // Right-to-left lines read (and align, and sweep) from the right.
+        .environment(\.layoutDirection, line.rtl ? .rightToLeft : .leftToRight)
+        .scaleEffect(lit || reduce ? 1 : 0.98, anchor: anchor)
+        .animation(reduce ? nil : .easeOut(duration: 0.8 * 0.55 / max(Double(style.speed), 0.1)), value: lit)
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel(text.isEmpty ? "instrumental" : text)
-        .accessibilityAddTraits(isCurrent ? .isSelected : [])
+        .accessibilityLabel(accessibilityText(text))
+        .accessibilityAddTraits(lit ? .isSelected : [])
+    }
+
+    private func accessibilityText(_ text: String) -> String {
+        if text.isEmpty { return "instrumental" }
+        if let b = line.backing, !b.text.isEmpty { return "\(text). Backing vocals: \(b.text)" }
+        return text
     }
 
     private var translation: String? {
@@ -244,30 +306,131 @@ struct LyricRow: View {
 
     private func font(bold: Bool) -> Font { .system(size: size, weight: bold ? .bold : .regular, design: .monospaced) }
 
-    /// Word/syllable emphasis (desktop STEPS = 6): sung tokens in the current color,
-    /// the one being sung brightening toward the highlight in six steps, the rest waiting.
-    private func words(at pos: UInt64, current: Color) -> Text {
+    /// The theme's alignment in reading order; a duet's other voice on the other side
+    /// (centered lyrics put a duet's lead at the start and the other voice at the end).
+    private var side: String {
+        let a = Look.shared.lyrics.align
+        switch line.voice {
+        case .other: return a == "right" ? "left" : "right"
+        case .lead where duet && a == "center": return "left"
+        default: return a
+        }
+    }
+    private var hAlign: HorizontalAlignment { side == "left" ? .leading : side == "right" ? .trailing : .center }
+    private var textAlign: TextAlignment { side == "left" ? .leading : side == "right" ? .trailing : .center }
+    private var frameAlign: Alignment { side == "left" ? .leading : side == "right" ? .trailing : .center }
+    private var anchor: UnitPoint { side == "left" ? .leading : side == "right" ? .trailing : .center }
+}
+
+/// Words or syllables sung across their length: each sweeps from waiting to lit
+/// as it's sung (with Reduce Motion, brightens in place instead), drawn every
+/// frame while the song plays. Only drawing changes per frame: the text and its
+/// layout stay the same.
+struct SungText: View {
+    @Environment(Store.self) private var store
+    let m: LyricsModel
+    let tokens: [LyricToken]
+    let font: Font
+    /// The line's lit color.
+    let base: Color
+    let reduce: Bool
+
+    var body: some View {
         let look = Look.shared
-        let highlight = look.lyricsHighlight
-        let waiting = highlight.opacity(0.62)
+        let text = Self.text(tokens).font(font).foregroundStyle(.white)
+        // Words still to come are dim, the word being sung lights up bright, and sung
+        // words settle into the line's color a moment after they're sung.
+        let bright = sungColor(highlight: look.lyricsHighlight, line: base, text: look.foreground)
+        TimelineView(.animation(minimumInterval: reduce ? 1.0 / 20 : nil, paused: !store.isPlaying && store.scrub == nil)) { ctx in
+            let pos = lyricsPosition(store, m, at: ctx.date)
+            let lit = tokens.map { t -> Color in
+                let settle = pos > t.endMs ? min(Double(pos - t.endMs) / 400, 1) : 0
+                return bright.mix(with: base, by: settle)
+            }
+            text.textRenderer(Sweep(progress: progress(tokens, pos), lit: lit, waiting: base.opacity(0.4), soft: reduce ? 0 : 0.45))
+        }
+    }
+
+    /// The pieces as one text, each tagged with its index for `Sweep`.
+    static func text(_ tokens: [LyricToken]) -> Text {
         var out = Text("")
-        for (k, t) in line.tokens.enumerated() {
-            let end = t.endMs ?? (k + 1 < line.tokens.count ? line.tokens[k + 1].startMs : t.startMs + 400)
-            let color: Color
-            if pos >= end { color = current }
-            else if pos >= t.startMs {
-                let progress = Double(pos - t.startMs) / Double(max(end - t.startMs, 1))
-                let step = (progress * 6).rounded(.down) / 6
-                color = highlight.opacity(0.62 + 0.38 * (0.35 + step * 0.65))
-            } else { color = waiting }
-            out = out + Text(t.text).foregroundColor(color)
+        for (k, t) in tokens.enumerated() {
+            let piece = Text(t.text).customAttribute(Piece(index: k))
+            out = Text("\(out)\(piece)")
         }
         return out
     }
+}
 
-    private var hAlign: HorizontalAlignment { Look.shared.lyrics.align == "left" ? .leading : Look.shared.lyrics.align == "right" ? .trailing : .center }
-    private var textAlign: TextAlignment { Look.shared.lyrics.align == "left" ? .leading : Look.shared.lyrics.align == "right" ? .trailing : .center }
-    private var anchor: UnitPoint { Look.shared.lyrics.align == "left" ? .leading : Look.shared.lyrics.align == "right" ? .trailing : .center }
+/// How bright a color looks (0 dark – 1 light).
+private func luminance(_ c: Color) -> Float {
+    let r = c.resolve(in: EnvironmentValues())
+    return 0.2126 * r.linearRed + 0.7152 * r.linearGreen + 0.0722 * r.linearBlue
+}
+
+/// The color of the word being sung: the theme's highlight when it stands out from
+/// the line's own color; otherwise (a dark highlight, or album colors close to the
+/// line's) the line's color lifted most of the way toward the text color, so the
+/// word being sung always shows (shared with the desktop's `sung_color`).
+func sungColor(highlight: Color, line: Color, text: Color) -> Color {
+    let (h, c, t) = (luminance(highlight), luminance(line), luminance(text))
+    return (h - c) * (t >= c ? 1 : -1) > 0.12 ? highlight : line.mix(with: text, by: 0.7)
+}
+
+/// Which word or syllable a run of text is.
+struct Piece: TextAttribute {
+    let index: Int
+}
+
+/// Draws each piece in the waiting color with its sung share in its lit color,
+/// over a soft edge (`soft` × the line height wide) that runs the way the text
+/// reads; with `soft` 0 the piece brightens in place instead.
+struct Sweep: TextRenderer {
+    let progress: [Double]
+    let lit: [Color]
+    let waiting: Color
+    let soft: CGFloat
+
+    func draw(layout: Text.Layout, in ctx: inout GraphicsContext) {
+        for line in layout {
+            for run in line {
+                guard let k = run[Piece.self]?.index, k < progress.count else {
+                    ctx.draw(run)
+                    continue
+                }
+                let p = progress[k]
+                var under = ctx
+                under.addFilter(.colorMultiply(waiting))
+                if p >= 1 {
+                    var over = ctx
+                    over.addFilter(.colorMultiply(lit[k]))
+                    over.draw(run)
+                    continue
+                }
+                under.draw(run)
+                guard p > 0 else { continue }
+                var over = ctx
+                over.addFilter(.colorMultiply(lit[k]))
+                let r = run.typographicBounds.rect
+                if soft <= 0 {
+                    // Lit the moment it starts, fully by its end.
+                    over.opacity = 0.6 + p * 0.4
+                    over.draw(run)
+                    continue
+                }
+                let band = min(r.height * soft, r.width * 0.6)
+                let ltr = run.layoutDirection == .leftToRight
+                // The edge runs from half a band before the piece to half a band after it.
+                let edge = ltr ? r.minX - band / 2 + p * (r.width + band) : r.maxX + band / 2 - p * (r.width + band)
+                over.clipToLayer { mask in
+                    let start = CGPoint(x: edge - (ltr ? band / 2 : -band / 2), y: r.midY)
+                    let end = CGPoint(x: edge + (ltr ? band / 2 : -band / 2), y: r.midY)
+                    mask.fill(Path(r.insetBy(dx: -band, dy: -r.height)), with: .linearGradient(Gradient(colors: [.white, .clear]), startPoint: start, endPoint: end))
+                }
+                over.draw(run)
+            }
+        }
+    }
 }
 
 /// Plain (unsynced) lyrics: static, in the current color, with stanza gaps.
@@ -375,7 +538,7 @@ struct LyricsFooter: View {
                 }
             }
             Button { showDetail.toggle() } label: {
-                Text(m.provenance).gFont(11).foregroundStyle(look.muted).lineLimit(1)
+                Text(m.pending ? m.provenance + " · looking for word timing…" : m.provenance).gFont(11).foregroundStyle(look.muted).lineLimit(1)
             }
             .buttonStyle(.plain)
             if showDetail { Text(m.detail).gFont(11).foregroundStyle(look.muted).textSelection(.enabled) }

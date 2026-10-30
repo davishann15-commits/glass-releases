@@ -85,16 +85,16 @@ impl Record {
                 return None;
             }
             if !doc.lines.is_empty() {
-                return Some(Lyrics { source, language: doc.language.clone(), timing: doc.timing, lines: doc.lines.clone(), translations: Vec::new() });
+                return Some(Lyrics { language: doc.language.clone(), ..Lyrics::new(source, doc.timing, doc.lines.clone()) });
             }
         }
         let language = from_file.as_ref().and_then(|d| d.language.clone());
         if let Some((lines, timing)) = self.synced.as_deref().map(lrc).filter(|(l, _)| !l.is_empty()) {
-            return Some(Lyrics { source, language, timing, lines, translations: Vec::new() });
+            return Some(Lyrics { language, ..Lyrics::new(source, timing, lines) });
         }
         let plain_text = self.plain.clone().or_else(|| from_file.and_then(|d| d.plain));
         let lines = plain(plain_text.as_deref()?);
-        (!lines.is_empty()).then_some(Lyrics { source, language, timing: Timing::Plain, lines, translations: Vec::new() })
+        (!lines.is_empty()).then_some(Lyrics { language, ..Lyrics::new(source, Timing::Plain, lines) })
     }
 
     pub fn candidate(&self) -> Candidate {
@@ -191,7 +191,7 @@ pub fn lyricsfile(src: &str) -> Result<LyricsFile, String> {
                 .filter(|w| w.start_ms >= 0)
                 .map(|w| Token { text: w.text.unwrap_or_default(), start_ms: at(w.start_ms), end_ms: w.end_ms.filter(|e| *e >= 0).map(at) })
                 .collect();
-            Line { start_ms: at(l.start_ms), end_ms: l.end_ms.filter(|e| *e >= 0).map(at), text, tokens }
+            Line { start_ms: at(l.start_ms), end_ms: l.end_ms.filter(|e| *e >= 0).map(at), text, tokens, ..Default::default() }
         })
         .collect();
     lines.sort_by_key(|l| l.start_ms);
@@ -203,22 +203,24 @@ pub fn lyricsfile(src: &str) -> Result<LyricsFile, String> {
 /// Drops word timing that doesn't hold together (out of order, outside its
 /// line, or text that doesn't match the line) and says how precisely the
 /// remaining lyrics are timed. Lines keep their own timing either way.
-fn settle_tokens(lines: &mut [Line]) -> Timing {
+pub(crate) fn settle_tokens(lines: &mut [Line]) -> Timing {
     let starts: Vec<u64> = lines.iter().map(|l| l.start_ms).collect();
     for (i, l) in lines.iter_mut().enumerate() {
+        // Where the line may run to: the next line's start, or its own end when
+        // it overlaps the next (two voices at once).
+        let next = starts[i + 1..].iter().copied().find(|&s| s > l.start_ms).unwrap_or(u64::MAX).max(l.end_ms.unwrap_or(0));
+        if let Some(b) = l.backing.as_mut()
+            && !holds_together(&b.tokens, &b.text, l.start_ms, next.saturating_add(2_000))
+        {
+            b.tokens.clear();
+        }
         if l.tokens.is_empty() {
             continue;
         }
         if l.text.trim().is_empty() {
             l.text = l.tokens.iter().map(|t| t.text.as_str()).collect();
         }
-        let next = starts.get(i + 1).copied().unwrap_or(u64::MAX);
-        let ordered = l.tokens.windows(2).all(|p| p[0].start_ms <= p[1].start_ms);
-        // A little slack: hand-timed words often start a beat before the line.
-        let inside = l.tokens.iter().all(|t| t.start_ms + 500 >= l.start_ms && t.start_ms <= next.saturating_add(500));
-        let joined: String = l.tokens.iter().map(|t| t.text.as_str()).collect();
-        let same_text = squash(&joined) == squash(&l.text);
-        if !(ordered && inside && same_text) {
+        if !holds_together(&l.tokens, &l.text, l.start_ms, next) {
             l.tokens.clear();
         }
     }
@@ -231,23 +233,32 @@ fn settle_tokens(lines: &mut [Line]) -> Timing {
     if sung.iter().all(|l| !l.tokens.is_empty()) { if sung.iter().any(|l| splits_words(&l.tokens)) { Timing::Syllable } else { Timing::Word } } else { Timing::Line }
 }
 
+/// Timed pieces in order, within their line (a little slack: hand-timed words
+/// often start a beat early), spelling out the line's text.
+fn holds_together(tokens: &[Token], text: &str, start: u64, until: u64) -> bool {
+    let ordered = tokens.windows(2).all(|p| p[0].start_ms <= p[1].start_ms);
+    let inside = tokens.iter().all(|t| t.start_ms + 500 >= start && t.start_ms <= until.saturating_add(500));
+    let joined: String = tokens.iter().map(|t| t.text.as_str()).collect();
+    ordered && inside && squash(&joined) == squash(text)
+}
+
 /// Letters and digits only, lowercased: for comparing texts that differ in
 /// spacing or punctuation.
-fn squash(s: &str) -> String {
+pub(crate) fn squash(s: &str) -> String {
     s.chars().filter(|c| c.is_alphanumeric()).flat_map(char::to_lowercase).collect()
 }
 
 /// True when some tokens are parts of a word (no space between two letters
 /// of the same word), i.e. syllable timing. CJK text has no spaces between
 /// words, so a join between two CJK characters doesn't count.
-fn splits_words(tokens: &[Token]) -> bool {
+pub(crate) fn splits_words(tokens: &[Token]) -> bool {
     tokens.windows(2).any(|p| {
         let (Some(a), Some(b)) = (p[0].text.chars().last(), p[1].text.chars().next()) else { return false };
         a.is_alphanumeric() && b.is_alphanumeric() && !(is_cjk(a) || is_cjk(b))
     })
 }
 
-fn is_cjk(c: char) -> bool {
+pub(crate) fn is_cjk(c: char) -> bool {
     matches!(c as u32, 0x3040..=0x30FF | 0x3400..=0x4DBF | 0x4E00..=0x9FFF | 0xF900..=0xFAFF | 0xFF66..=0xFF9F | 0x20000..=0x2FA1F)
 }
 
@@ -297,7 +308,7 @@ pub fn lrc(src: &str) -> (Vec<Line>, Timing) {
         }
         let (text, words) = enhanced(rest);
         for t in times {
-            out.push(Line { start_ms: t, end_ms: None, text: text.clone(), tokens: words.iter().map(|(w, s, e)| Token { text: w.clone(), start_ms: s.unwrap_or(t), end_ms: *e }).collect() });
+            out.push(Line { start_ms: t, text: text.clone(), tokens: words.iter().map(|(w, s, e)| Token { text: w.clone(), start_ms: s.unwrap_or(t), end_ms: *e }).collect(), ..Default::default() });
         }
     }
     // A positive LRC offset makes lyrics appear sooner.

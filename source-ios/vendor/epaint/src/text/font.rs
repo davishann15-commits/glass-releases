@@ -585,6 +585,7 @@ impl FontFace {
             y_offset_in_points,
             ascent,
             row_height: ascent - descent + line_gap,
+            line_gap,
             location,
             location_hash,
         }
@@ -801,6 +802,10 @@ pub struct StyledMetrics {
     ///
     /// Returns a value rounded to [`emath::GUI_ROUNDING`].
     pub row_height: f32,
+
+    /// The font's line gap (part of [`Self::row_height`]), in points.
+    // Glass: kept so fonts of a row can be lined up without it.
+    pub line_gap: f32,
 
     /// Resolved variation coordinates.
     pub location: skrifa::instance::Location,

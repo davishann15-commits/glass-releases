@@ -98,6 +98,28 @@ pub struct Draft {
     pub status: DraftStatus,
 }
 
+/// Songs the assistant recommends, shown as a card: the user plays a
+/// 30-second preview of each and adds the ones they like to a playlist.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Picks {
+    pub id: String,
+    /// "For Night Drive", "Like this album".
+    pub title: String,
+    pub songs: Vec<Pick>,
+    /// The Spotify playlist (bare ID) they're for: its songs were left out,
+    /// and adding goes there.
+    pub for_playlist: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct Pick {
+    pub uri: String,
+    /// Why it fits, in a few words (the assistant's).
+    pub why: String,
+    /// The playlists (bare IDs) it was added to from the card.
+    pub added_to: Vec<String>,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum QueueMode {
     Next,
@@ -166,6 +188,8 @@ pub enum Effect {
     },
     /// Done by the app at once; its answer is added as `result` (or `error`).
     Act(AppOp),
+    /// Show recommendations (nothing changes until the user adds some).
+    Picks(Picks),
 }
 
 /// What the tools work on, captured when a request starts.

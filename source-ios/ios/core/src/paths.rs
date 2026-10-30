@@ -9,8 +9,8 @@ static DOCUMENTS: OnceLock<PathBuf> = OnceLock::new();
 static PICKED: OnceLock<Vec<Picked>> = OnceLock::new();
 
 pub fn install(c: &crate::bridge::CoreConfig) {
-    let _ = DOCUMENTS.set(PathBuf::from(&c.documents_dir));
-    let _ = PICKED.set(c.picked_folders.iter().map(|f| Picked { path: f.path.clone().into(), was: f.was.clone().map(Into::into), source: f.source }).collect());
+    let _ = DOCUMENTS.set(one_spelling(c.documents_dir.as_ref()));
+    let _ = PICKED.set(c.picked_folders.iter().map(|f| Picked { path: one_spelling(f.path.as_ref()), was: f.was.as_deref().map(|w| one_spelling(w.as_ref())), source: f.source }).collect());
     let _ = std::fs::create_dir_all(&c.data_dir);
     let _ = std::fs::create_dir_all(&c.cache_dir);
     move_old_config();
@@ -84,25 +84,25 @@ pub fn picked() -> &'static [Picked] {
     PICKED.get().map(Vec::as_slice).unwrap_or(&[])
 }
 
-/// Where a path kept from an earlier run is now. Inside a folder picked in Files: in
-/// that folder where it is now (a folder in another app's space, "On My iPhone › VLC",
-/// is in that app's container, which isn't Glass's). Anything else is `rebase`d: Glass's
-/// own Documents moves with Glass.
+/// Where a path kept from an earlier run is now, in `one_spelling`. Inside a folder
+/// picked in Files: in that folder where it is now (a folder in another app's space,
+/// "On My iPhone › VLC", is in that app's container, which isn't Glass's). Anything
+/// else is `rebase`d: Glass's own Documents moves with Glass.
 pub fn relocate(p: &std::path::Path, picked: &[Picked]) -> PathBuf {
     let plain = one_spelling(p);
     for f in picked {
         if plain.starts_with(one_spelling(&f.path)) {
-            return p.to_path_buf();
+            return plain;
         }
     }
     for f in picked {
         if let Some(was) = &f.was
             && let Ok(rest) = plain.strip_prefix(one_spelling(was))
         {
-            return f.path.join(rest);
+            return one_spelling(&f.path).join(rest);
         }
     }
-    rebase(p)
+    one_spelling(&rebase(p))
 }
 
 /// Whether the app can read `p` this run: it's in the app's own container, or in a
@@ -114,8 +114,11 @@ pub fn readable(p: &std::path::Path, picked: &[Picked]) -> bool {
     home.is_some_and(|h| plain.starts_with(h)) || picked.iter().any(|f| plain.starts_with(one_spelling(&f.path)))
 }
 
-/// /private/var/… as /var/… (iOS hands out both for the same place).
-fn one_spelling(p: &std::path::Path) -> PathBuf {
+/// /private/var/… as /var/… (iOS hands out both for the same place: Documents comes
+/// as /var/…, a folder picked in Files as /private/var/…). The core compares paths as
+/// they're written, so every path from Swift is taken in this spelling; one in the
+/// other spelling would match no song Local Files found.
+pub fn one_spelling(p: &std::path::Path) -> PathBuf {
     match p.strip_prefix("/private/var") {
         Ok(rest) => std::path::Path::new("/var").join(rest),
         Err(_) => p.to_path_buf(),
@@ -159,12 +162,31 @@ mod tests {
         let picked = [vlc.clone(), cloud.clone()];
         let song = Path::new("/var/mobile/Containers/Data/Application/VLC-NEW/Documents/Spotify/a.m4a");
         assert_eq!(relocate(song, &picked), song, "in a picked folder: not Glass's, kept");
-        assert_eq!(relocate(Path::new("/private/var/mobile/Containers/Data/Application/VLC-OLD/Documents/Spotify/x/a.m4a"), &picked), vlc.path.join("x/a.m4a"), "where the folder is now");
-        assert_eq!(relocate(&cloud.path.join("b.mp3"), &picked), cloud.path.join("b.mp3"));
+        assert_eq!(
+            relocate(Path::new("/private/var/mobile/Containers/Data/Application/VLC-OLD/Documents/Spotify/x/a.m4a"), &picked),
+            one_spelling(&vlc.path).join("x/a.m4a"),
+            "where the folder is now"
+        );
+        assert_eq!(relocate(&cloud.path.join("b.mp3"), &picked), Path::new("/var/mobile/Library/Mobile Documents/com~apple~CloudDocs/Music/b.mp3"), "in one spelling");
         let gone = Path::new("/var/mobile/Containers/Data/Application/GONE/Documents/Spotify");
         assert_eq!(relocate(gone, &picked), rebase(gone), "not picked: Glass's own");
         assert!(readable(&vlc.path, &picked) && readable(Path::new("/var/mobile/Library/Mobile Documents/com~apple~CloudDocs/Music/Pop"), &picked));
         assert!(!readable(Path::new("/var/mobile/Library/Mobile Documents/com~apple~CloudDocs/Other"), &picked));
         assert!(readable(&documents().join("Imported"), &[]));
+    }
+
+    #[test]
+    fn one_spelling_for_every_path() {
+        // A save folder picked in Files inside Glass's own folder comes as /private/var/…,
+        // while Local Files reads Glass's folder as /var/…: the songs saved there, and the
+        // downloaded playlist's paths, must be written the way Local Files finds them.
+        let picked = Path::new("/private/var/mobile/Containers/Data/Application/ID/Documents/Downloads");
+        assert_eq!(one_spelling(picked), Path::new("/var/mobile/Containers/Data/Application/ID/Documents/Downloads"));
+        for same in ["/var/mobile/x", "/Users/me/Music", "/private/varnish/x", "/private/tmp/x"] {
+            assert_eq!(one_spelling(Path::new(same)), Path::new(same), "{same}");
+        }
+        let elsewhere = Picked { path: "/private/var/mobile/Containers/Shared/AppGroup/G/File Provider Storage/Music".into(), was: None, source: false };
+        let song = elsewhere.path.join("Yacht Rock/Styx - Babe.m4a");
+        assert_eq!(relocate(&song, std::slice::from_ref(&elsewhere)), one_spelling(&song), "in a picked folder, in one spelling");
     }
 }

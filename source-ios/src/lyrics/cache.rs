@@ -3,14 +3,14 @@
 //!
 //! Matches are kept for 30 days (LRCLIB records get corrected), "nothing
 //! found" and "several matches" for a day (LRCLIB fetches missing lyrics in
-//! the background, so they may appear). The lyrics a user picks by hand are
-//! kept by `choices`, not here. Lyrics stay in the cache folder on this
-//! computer and are only shown in Glass.
+//! the background, so they may appear). The other services' answers are kept
+//! the same way, as Glass's own lyrics, in `words/`. Failures aren't kept.
+//! The lyrics a user picks by hand are kept by `choices`, not here. Lyrics
+//! stay in the cache folder on this device and are only shown in Glass.
 
-use super::Match;
-use super::TrackRef;
 use super::lrclib::Lookup;
 use super::parse::Record;
+use super::{Lyrics, Match, Outcome, ProviderId, Source, TrackRef};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -101,19 +101,44 @@ fn file_name(key: &str) -> String {
     format!("{:016x}.json", crate::model::fnv64(key))
 }
 
+fn word_file(p: ProviderId, key: &str) -> String {
+    format!("{}-{:016x}.json", p.key(), crate::model::fnv64(key))
+}
+
+/// Another service's answer for a song, as kept in `words/`.
+#[derive(Clone, Serialize, Deserialize)]
+struct Kept {
+    v: u32,
+    key: String,
+    provider: ProviderId,
+    query: String,
+    stored: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    found: Option<(Lyrics, Match)>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    instrumental: Option<Source>,
+}
+
+const WORDS: &str = "words";
+
+fn word_query(t: &TrackRef) -> String {
+    format!("{}\u{1f}{}", query(t), t.isrc)
+}
+
 pub struct Cache {
     dir: Option<PathBuf>,
     mem: Mutex<HashMap<String, Entry>>,
+    words: Mutex<HashMap<(ProviderId, String), Kept>>,
 }
 
 impl Cache {
     pub fn new(dir: PathBuf) -> Self {
-        Self { dir: Some(dir), mem: Mutex::default() }
+        Self { dir: Some(dir), mem: Mutex::default(), words: Mutex::default() }
     }
 
     /// Memory only (demo mode).
     pub fn in_memory() -> Self {
-        Self { dir: None, mem: Mutex::default() }
+        Self { dir: None, mem: Mutex::default(), words: Mutex::default() }
     }
 
     pub fn dir() -> PathBuf {
@@ -197,17 +222,96 @@ impl Cache {
         mem.insert(e.key.clone(), e);
     }
 
+    /// Another service's remembered answer for `t`: lyrics, instrumental or
+    /// nothing found, unless it has expired.
+    pub fn get_outcome(&self, p: ProviderId, t: &TrackRef) -> Option<Outcome> {
+        self.get_outcome_at(p, t, now())
+    }
+
+    fn get_outcome_at(&self, p: ProviderId, t: &TrackRef, at: u64) -> Option<Outcome> {
+        let fresh = |k: &Kept| {
+            let ttl = if k.found.is_some() || k.instrumental.is_some() { FOUND_TTL } else { MISS_TTL };
+            k.v == VERSION && k.provider == p && k.key == t.key && k.query == word_query(t) && at.saturating_sub(k.stored) < ttl.as_secs()
+        };
+        let mem = self.words.lock().unwrap().get(&(p, t.key.clone())).filter(|k| fresh(k)).cloned();
+        let kept = match mem {
+            Some(k) => k,
+            None => {
+                let path = self.dir.as_ref()?.join(WORDS).join(word_file(p, &t.key));
+                let k: Kept = serde_json::from_slice(&std::fs::read(path).ok()?).ok()?;
+                if !fresh(&k) {
+                    return None;
+                }
+                self.keep(k.clone());
+                k
+            }
+        };
+        Some(match (kept.found, kept.instrumental) {
+            (Some((lyrics, how)), _) => Outcome::Found { lyrics: std::sync::Arc::new(lyrics), how },
+            (None, Some(source)) => Outcome::Instrumental { source },
+            (None, None) => Outcome::NotFound { provider: p },
+        })
+    }
+
+    /// Remembers another service's answer. Only answers are kept: an error
+    /// (or "unavailable") is asked again next time.
+    pub fn put_outcome(&self, p: ProviderId, t: &TrackRef, o: &Outcome) {
+        self.put_outcome_at(p, t, o, now());
+    }
+
+    fn put_outcome_at(&self, p: ProviderId, t: &TrackRef, o: &Outcome, at: u64) {
+        let (found, instrumental) = match o {
+            Outcome::Found { lyrics, how } => (Some(((**lyrics).clone(), *how)), None),
+            Outcome::Instrumental { source } => (None, Some(source.clone())),
+            Outcome::NotFound { .. } => (None, None),
+            _ => return,
+        };
+        let k = Kept { v: VERSION, key: t.key.clone(), provider: p, query: word_query(t), stored: at, found, instrumental };
+        if let Some(dir) = &self.dir {
+            let dir = dir.join(WORDS);
+            let path = dir.join(word_file(p, &t.key));
+            let write = || -> std::io::Result<()> {
+                std::fs::create_dir_all(&dir)?;
+                let tmp = path.with_extension("json.tmp");
+                std::fs::write(&tmp, serde_json::to_vec(&k)?)?;
+                std::fs::rename(&tmp, &path)
+            };
+            if let Err(err) = write() {
+                log::warn!("lyrics cache: {err}");
+            }
+        }
+        self.keep(k);
+    }
+
+    fn keep(&self, k: Kept) {
+        const KEEP: usize = 64;
+        let mut words = self.words.lock().unwrap();
+        let id = (k.provider, k.key.clone());
+        if words.len() >= KEEP
+            && !words.contains_key(&id)
+            && let Some(old) = words.keys().next().cloned()
+        {
+            words.remove(&old);
+        }
+        words.insert(id, k);
+    }
+
     /// Drops what's remembered for one track (to look it up again).
     pub fn forget(&self, key: &str) {
         self.mem.lock().unwrap().remove(key);
+        self.words.lock().unwrap().retain(|(_, k), _| k != key);
         if let Some(dir) = &self.dir {
             let _ = std::fs::remove_file(dir.join(file_name(key)));
+            for p in ProviderId::ALL {
+                let _ = std::fs::remove_file(dir.join(WORDS).join(word_file(p, key)));
+            }
         }
     }
 
     /// Removes every cached lookup, and the saved translations kept in the same folder.
     pub fn clear(&self) -> std::io::Result<()> {
         self.mem.lock().unwrap().clear();
+        self.words.lock().unwrap().clear();
         match &self.dir {
             Some(dir) if dir.exists() => std::fs::remove_dir_all(dir),
             _ => Ok(()),
@@ -234,6 +338,18 @@ impl Cache {
     pub fn prune(&self) {
         let Some(dir) = &self.dir else { return };
         let at = now();
+        for f in std::fs::read_dir(dir.join(WORDS)).into_iter().flatten().flatten() {
+            if f.metadata().and_then(|m| m.modified()).ok().and_then(|m| m.elapsed().ok()).is_some_and(|age| age < MISS_TTL) {
+                continue;
+            }
+            let keep = std::fs::read(f.path()).ok().and_then(|b| serde_json::from_slice::<Kept>(&b).ok()).is_some_and(|k| {
+                let ttl = if k.found.is_some() || k.instrumental.is_some() { FOUND_TTL } else { MISS_TTL };
+                k.v == VERSION && at.saturating_sub(k.stored) < ttl.as_secs()
+            });
+            if !keep {
+                let _ = std::fs::remove_file(f.path());
+            }
+        }
         for f in std::fs::read_dir(dir).into_iter().flatten().flatten() {
             // Saved translations live in a folder of their own here.
             if f.file_type().is_ok_and(|t| t.is_dir()) {
@@ -259,7 +375,7 @@ mod tests {
     use super::*;
 
     fn track(key: &str) -> TrackRef {
-        TrackRef { key: key.into(), title: "Song".into(), artists: vec!["Artist".into()], album: "Album".into(), duration_ms: 200_000 }
+        TrackRef { key: key.into(), title: "Song".into(), artists: vec!["Artist".into()], album: "Album".into(), duration_ms: 200_000, ..Default::default() }
     }
 
     fn rec() -> Record {
@@ -305,6 +421,37 @@ mod tests {
         c.put(&t, &Lookup::Found(rec(), Match::Search));
         t.title = "Retagged".into();
         assert!(c.get(&t).is_none());
+    }
+
+    #[test]
+    fn other_services_answers_are_kept_but_not_their_failures() {
+        let dir = temp("words");
+        let t = track("spotify:track:w");
+        let lyrics = crate::lyrics::Lyrics::new(
+            crate::lyrics::Source { provider: ProviderId::LrcRed, id: "USAAA0000001".into(), title: "Song".into(), artist: "Artist".into(), album: String::new(), duration_ms: 200_000 },
+            crate::lyrics::Timing::Word,
+            vec![crate::lyrics::Line {
+                start_ms: 1000,
+                text: "hi".into(),
+                tokens: vec![crate::lyrics::Token { text: "hi".into(), start_ms: 1000, end_ms: Some(1500) }],
+                voice: crate::lyrics::Voice::Other,
+                ..Default::default()
+            }],
+        );
+        let found = Outcome::Found { lyrics: std::sync::Arc::new(lyrics), how: Match::Exact };
+        Cache::new(dir.clone()).put_outcome_at(ProviderId::LrcRed, &t, &found, 1_000);
+        let c = Cache::new(dir.clone());
+        assert_eq!(c.get_outcome_at(ProviderId::LrcRed, &t, 1_000 + 3600), Some(found.clone()), "read back from disk, voices and all");
+        assert_eq!(c.get_outcome_at(ProviderId::Unison, &t, 1_000), None, "kept per service");
+        assert!(c.get_outcome_at(ProviderId::LrcRed, &t, 1_000 + FOUND_TTL.as_secs() + 1).is_none());
+        c.put_outcome_at(ProviderId::NetEase, &t, &Outcome::Failed { provider: ProviderId::NetEase, error: "offline".into() }, 1_000);
+        assert_eq!(c.get_outcome_at(ProviderId::NetEase, &t, 1_000), None, "a failure is asked again");
+        c.put_outcome_at(ProviderId::NetEase, &t, &Outcome::NotFound { provider: ProviderId::NetEase }, 1_000);
+        assert_eq!(c.get_outcome_at(ProviderId::NetEase, &t, 1_000 + 3600), Some(Outcome::NotFound { provider: ProviderId::NetEase }));
+        assert!(c.get_outcome_at(ProviderId::NetEase, &t, 1_000 + MISS_TTL.as_secs() + 1).is_none());
+        c.forget(&t.key);
+        assert_eq!(Cache::new(dir.clone()).get_outcome_at(ProviderId::LrcRed, &t, 1_000 + 3600), None, "look again forgets every service's answer");
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

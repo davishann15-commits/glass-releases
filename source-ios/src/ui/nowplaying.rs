@@ -13,9 +13,8 @@ use super::widgets::{self, icon_btn, paint_cover, play_btn};
 use crate::app::{Action, App, NpView, Route};
 use crate::lyrics::service::{ProviderSetting, Resolved, Status};
 use crate::lyrics::translate::{Fix, Mode, Translation};
-use crate::lyrics::{self, Candidate, Line, Lyrics, Match, Outcome, Timing, TrackRef};
+use crate::lyrics::{self, Candidate, Line, Lyrics, Match, Outcome, ProviderId, Timing, TrackRef};
 use crate::model::{self, s};
-use crate::theme_config::LyricsStyle;
 use eframe::egui::{self, Align2, Color32, CursorIcon, Id, Rect, RichText, ScrollArea, Sense, Ui, UiBuilder, pos2, vec2};
 use egui::text::{LayoutJob, TextFormat};
 use serde_json::Value;
@@ -248,10 +247,14 @@ fn controls(app: &mut App, ui: &mut Ui, rect: Rect) {
         None => (app.pb.position(), item.as_ref().map(|i| model::u(i, "duration_ms")).unwrap_or(0)),
     };
     let (resp, new) = nowbar::rail(ui, Id::new("np-seek"), rect.width(), if dur > 0 { pos as f32 / dur as f32 } else { 0.0 });
-    if let Some(f) = new
-        && (resp.drag_stopped() || resp.clicked())
-    {
-        app.act(Action::Seek((f * dur as f32) as u64));
+    if let Some(f) = new {
+        if resp.drag_stopped() || resp.clicked() {
+            app.scrub_ms = None;
+            app.act(Action::Seek((f * dur as f32) as u64));
+        } else if resp.dragged() {
+            // The lyrics follow the bar while it's held.
+            app.scrub_ms = Some(((f * dur as f32) as u64, std::time::Instant::now()));
+        }
     }
     let (tr, _) = ui.allocate_exact_size(vec2(rect.width(), px(18.0)), Sense::hover());
     ui.painter().text(tr.left_center(), Align2::LEFT_CENTER, model::fmt_ms(pos), theme::regular(12.0), col::sub());
@@ -339,42 +342,140 @@ fn lerp_color(a: Color32, b: Color32, t: f32) -> Color32 {
     Color32::from_rgba_unmultiplied(m(a.r(), b.r()), m(a.g(), b.g()), m(a.b(), b.b()), m(a.a(), b.a()))
 }
 
-/// The synced lyrics' line heights, measured once per song, width and font.
+/// The synced lyrics' layout facts, worked out once per song, width and font.
 struct Measured {
     /// "translated": the translation in each line's place.
     translated: Option<Vec<Line>>,
     plain: Vec<f32>,
     bold: Vec<f32>,
+    /// The backing vocals under each line, when it has them.
+    back: Vec<Option<f32>>,
     /// The translation under each line ("original + translation").
     trans: Vec<Option<f32>>,
+    /// Right-to-left text.
+    rtl: Vec<bool>,
+    /// Laid out piece by piece, for word or syllable timing (see `wipe`).
+    tagged: Vec<bool>,
+    /// Each line's alignment: the theme's, mirrored for right-to-left text and
+    /// for a duet's other voice.
+    align: Vec<egui::Align>,
 }
 
-/// One line laid out. For the current line with word or syllable timing,
-/// sung pieces take the current color, the piece being sung brightens into
-/// the highlight as it's sung, and the rest wait in a dimmed highlight;
-/// otherwise the color is set when painting. Nothing is highlighted that
-/// wasn't timed.
-fn line_job(line: &Line, font: egui::FontId, wrap: f32, align: egui::Align, sung: Option<(usize, f32)>, st: &LyricsStyle) -> LayoutJob {
+/// `a` toward `b` by `t`, translucent colors included (Color32 is premultiplied,
+/// so its channels mix as they are).
+fn mix(a: Color32, b: Color32, t: f32) -> Color32 {
+    let t = t.clamp(0.0, 1.0);
+    let m = |x: u8, y: u8| (x as f32 + (y as f32 - x as f32) * t).round() as u8;
+    Color32::from_rgba_premultiplied(m(a.r(), b.r()), m(a.g(), b.g()), m(a.b(), b.b()), m(a.a(), b.a()))
+}
+
+/// How bright a color looks (0 dark – 1 light), for picking the brighter of two.
+fn luminance(c: Color32) -> f32 {
+    let lin = |v: u8| {
+        let v = v as f32 / 255.0;
+        if v <= 0.04045 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) }
+    };
+    0.2126 * lin(c.r()) + 0.7152 * lin(c.g()) + 0.0722 * lin(c.b())
+}
+
+/// The color of the word being sung: the theme's highlight when it stands out
+/// from the line's own color; otherwise (a dark highlight, or album colors close
+/// to the line's) the line's color lifted most of the way toward the text color,
+/// so the word being sung always shows.
+fn sung_color(highlight: Color32, current: Color32, text: Color32) -> Color32 {
+    let (h, c, t) = (luminance(highlight), luminance(current), luminance(text));
+    // "Stands out": noticeably further from the line's color, toward the text's side.
+    if (h - c) * (t - c).signum() > 0.12 { highlight } else { lerp_color(current, text, 0.7) }
+}
+
+/// A piece's index hides in its glyphs' color when a timed line is laid out,
+/// so `wipe` can find each piece's glyphs without laying the line out again.
+const TAG: u8 = 0xA5;
+
+fn tag(k: usize) -> Color32 {
+    Color32::from_rgb((k & 0xFF) as u8, ((k >> 8) & 0xFF) as u8, TAG)
+}
+
+fn untag(c: Color32) -> Option<usize> {
+    (c.b() == TAG && c.a() == 255).then(|| c.r() as usize | (c.g() as usize) << 8)
+}
+
+fn mirror(a: egui::Align) -> egui::Align {
+    match a {
+        egui::Align::LEFT => egui::Align::RIGHT,
+        egui::Align::RIGHT => egui::Align::LEFT,
+        c => c,
+    }
+}
+
+/// One line laid out. Untimed lines are one piece of text (colored when
+/// painted); timed ones (`tagged`) a section per word or syllable, tagged
+/// with its index. A right-to-left line's pieces go in visual order: each
+/// is shaped right to left, and egui lays sections out left to right.
+fn line_job(text: &str, tokens: &[lyrics::Token], font: egui::FontId, wrap: f32, align: egui::Align, rtl: bool, tagged: bool) -> LayoutJob {
     let mut job = LayoutJob::default();
     job.wrap.max_width = wrap;
     job.halign = align;
     let format = |color| TextFormat { font_id: font.clone(), color, ..Default::default() };
-    match sung {
-        Some((cur, frac)) if !line.tokens.is_empty() => {
-            let (current, highlight) = (st.current.color32(), st.highlight.color32());
-            let waiting = highlight.gamma_multiply(0.62);
-            for (i, t) in line.tokens.iter().enumerate() {
-                let color = match i.cmp(&cur) {
-                    std::cmp::Ordering::Less => current,
-                    std::cmp::Ordering::Equal => lerp_color(waiting, highlight, 0.35 + frac * 0.65),
-                    std::cmp::Ordering::Greater => waiting,
-                };
-                job.append(&t.text, 0.0, format(color));
-            }
+    if tagged && !tokens.is_empty() {
+        let order: Vec<usize> = if rtl { (0..tokens.len()).rev().collect() } else { (0..tokens.len()).collect() };
+        for k in order {
+            job.append(&tokens[k].text, 0.0, format(tag(k)));
         }
-        _ => job.append(if line.text.is_empty() { "♪" } else { &line.text }, 0.0, format(Color32::WHITE)),
+    } else {
+        job.append(if text.is_empty() { "♪" } else { text }, 0.0, format(Color32::WHITE));
     }
     job
+}
+
+/// `g` (a tagged line) with each piece's sung share swept in, the way the
+/// text reads: `progress[k]` is piece k's share sung (0–1), `lit[k]` its
+/// color once sung, `waiting` the color of what's still to come. The edge is
+/// a soft band about `band` wide, so the sweep reads as one motion even at a
+/// modest frame rate. With Reduce Motion (`band` 0) nothing moves: each piece
+/// brightens in place over its length instead. Only vertex colors change:
+/// the layout is reused.
+fn wipe(g: &std::sync::Arc<egui::Galley>, progress: &[f32], lit: &[Color32], waiting: Color32, rtl: bool, band: f32) -> std::sync::Arc<egui::Galley> {
+    let mut out = (**g).clone();
+    for placed in &mut out.rows {
+        let mut row = (*placed.row).clone();
+        let range = row.visuals.glyph_vertex_range.clone();
+        // Each piece's extent on this row.
+        let mut extent: Vec<(usize, f32, f32)> = Vec::new();
+        for v in &row.visuals.mesh.vertices[range.clone()] {
+            if let Some(k) = untag(v.color) {
+                match extent.iter_mut().find(|e| e.0 == k) {
+                    Some(e) => {
+                        e.1 = e.1.min(v.pos.x);
+                        e.2 = e.2.max(v.pos.x);
+                    }
+                    None => extent.push((k, v.pos.x, v.pos.x)),
+                }
+            }
+        }
+        for v in &mut row.visuals.mesh.vertices[range] {
+            let Some(k) = untag(v.color) else { continue };
+            let p = progress.get(k).copied().unwrap_or(0.0);
+            let lit_k = lit.get(k).copied().unwrap_or(waiting);
+            v.color = if p <= 0.0 {
+                waiting
+            } else if p >= 1.0 {
+                lit_k
+            } else if band <= 0.0 {
+                // Lit the moment it starts, fully by its end.
+                mix(waiting, lit_k, 0.6 + p * 0.4)
+            } else {
+                let &(_, x0, x1) = extent.iter().find(|e| e.0 == k).expect("measured above");
+                let b = band.min((x1 - x0) * 0.6).max(1.0);
+                // The edge runs from half a band before the piece to half a band after it.
+                let edge = if rtl { x1 + b / 2.0 - p * (x1 - x0 + b) } else { x0 - b / 2.0 + p * (x1 - x0 + b) };
+                let sung = if rtl { v.pos.x - edge } else { edge - v.pos.x };
+                mix(waiting, lit_k, sung / b + 0.5)
+            };
+        }
+        placed.row = std::sync::Arc::new(row);
+    }
+    std::sync::Arc::new(out)
 }
 
 fn ease_out_cubic(t: f32) -> f32 {
@@ -415,7 +516,8 @@ fn tween(ui: &Ui, id: Id, line: i64, target: f32, secs: f32, ease: fn(f32) -> f3
 /// Top left: what the translation is doing, or where the one showing came from.
 fn translation_note(app: &mut App, ui: &mut Ui, rect: Rect, state: Option<Option<&Translation>>, lyrics: &Lyrics) {
     // Room left of the "lyrics / line sync" header.
-    let header_w = ui.painter().layout_no_wrap(format!("lyrics / {}", lyrics.timing.label()), theme::regular(13.0), col::sub()).size().x;
+    let header_w = ui.painter().layout_no_wrap(format!("lyrics / {}", lyrics.timing.label()), theme::regular(13.0), col::sub()).size().x
+        + lyrics.named_by().iter().map(|c| ui.painter().layout_no_wrap(format!("{} · ", c.text), theme::regular(12.0), col::sub()).size().x).sum::<f32>();
     use crate::lyrics::translate::language_name;
     let Some(state) = state else { return };
     let (text, fix, retry) = match state {
@@ -468,6 +570,40 @@ fn header(ui: &mut Ui, rect: Rect, text: &str, tip: Option<&str>) {
     }
 }
 
+/// Where the lyrics are from, left of the header at the top right: "lrc.red ·
+/// lyrics / word sync". Services that ask for credit get it as a link (lrc.red,
+/// Spicy Lyrics' syncers); the others are named ("netease · lyrics / word sync").
+/// Returns how wide the header and credits are together.
+fn credits(ui: &mut Ui, rect: Rect, lyrics: &Lyrics, header_w: f32) -> f32 {
+    let font = theme::regular(12.0);
+    let sep = " · ";
+    let mut x = rect.right() - header_w;
+    let y = rect.top() + px(14.0);
+    for c in lyrics.named_by().iter().rev() {
+        let g = ui.painter().layout_no_wrap(sep.to_string(), font.clone(), col::muted());
+        x -= g.size().x;
+        ui.painter().galley(pos2(x, y - g.size().y / 2.0), g, col::muted());
+        let g = ui.painter().layout_no_wrap(c.text.clone(), font.clone(), col::sub());
+        x -= g.size().x;
+        let r = Rect::from_min_size(pos2(x, y - g.size().y / 2.0), g.size());
+        if let Some(url) = &c.url {
+            let resp = ui.interact(r, Id::new(("lyrics-credit", &c.text)), Sense::click()).on_hover_cursor(CursorIcon::PointingHand).on_hover_text(url.as_str());
+            resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Link, true, &c.text));
+            let color = if resp.hovered() { col::text() } else { col::sub() };
+            ui.painter().galley(r.min, g, color);
+            if resp.hovered() {
+                ui.painter().hline(r.x_range(), r.bottom(), egui::Stroke::new(1.0, color));
+            }
+            if resp.clicked() {
+                let _ = open::that(url);
+            }
+        } else {
+            ui.painter().galley(r.min, g, col::sub());
+        }
+    }
+    rect.right() - x
+}
+
 /// A centered note with optional buttons under it.
 fn message(app: &mut App, ui: &mut Ui, rect: Rect, title: &str, body: &str, actions: impl FnOnce(&mut App, &mut Ui)) {
     ui.add_space(rect.height() * 0.28);
@@ -478,8 +614,8 @@ fn message(app: &mut App, ui: &mut Ui, rect: Rect, title: &str, body: &str, acti
 
 fn provider_name(app: &App) -> &'static str {
     match app.config.lyrics().provider {
-        ProviderSetting::Spotify => "Spotify",
-        _ => "LRCLIB",
+        ProviderSetting::Only(p) => p.label(),
+        ProviderSetting::Auto => "LRCLIB",
     }
 }
 
@@ -575,7 +711,10 @@ fn show_lyrics(app: &mut App, ui: &mut Ui, rect: Rect, footer_at: Rect, track: &
         Timing::Line => "The provider timed each line, not each word, so lines are highlighted whole.",
         Timing::Plain => "These lyrics have no timing, so they don't follow the song.",
     };
-    header(ui, rect, &format!("lyrics / {}", lyrics.timing.label()), Some(tip));
+    let title = format!("lyrics / {}", lyrics.timing.label());
+    header(ui, rect, &title, Some(tip));
+    let header_w = ui.painter().layout_no_wrap(title, theme::regular(13.0), col::sub()).size().x;
+    credits(ui, rect, lyrics, header_w);
     // The footer sits at the very bottom of the right side (under the visualizer when it shows).
     let body = Rect::from_min_max(pos2(rect.left(), rect.top() + px(34.0)), pos2(rect.right(), rect.bottom().min(footer_at.top()) - px(6.0)));
     footer(app, ui, footer_at, lyrics, how, res);
@@ -589,11 +728,6 @@ fn show_lyrics(app: &mut App, ui: &mut Ui, rect: Rect, footer_at: Rect, track: &
         "center" => egui::Align::Center,
         "right" => egui::Align::RIGHT,
         _ => egui::Align::LEFT,
-    };
-    let anchor_x = match align {
-        egui::Align::Center => rect.center().x,
-        egui::Align::RIGHT => rect.right(),
-        _ => rect.left(),
     };
     let regular = egui::FontId::new(size, theme::lyrics(1.0, false).family);
     let strong = egui::FontId::new(size, theme::lyrics(1.0, st.bold).family);
@@ -646,8 +780,10 @@ fn show_lyrics(app: &mut App, ui: &mut Ui, rect: Rect, footer_at: Rect, track: &
     let below = mode == Mode::Below && tr_lines.is_some();
     translation_note(app, ui, rect, tr_state.as_ref().map(Option::as_deref), lyrics);
     let small = egui::FontId::new(((size * 0.58) / 2.0).round() * 2.0, theme::lyrics(1.0, false).family);
+    // Backing vocals: smaller, under their line.
+    let back_font = egui::FontId::new(((size * 0.66) / 2.0).round() * 2.0, theme::lyrics(1.0, false).family);
     // "original + translation": the translation in smaller type under each line.
-    let trans_job = |i: usize, shown: &[Line]| -> Option<LayoutJob> {
+    let trans_job = |i: usize, shown: &[Line], align: egui::Align| -> Option<LayoutJob> {
         let t = tr_lines.as_ref().filter(|_| below)?.get(i)?.trim();
         (!t.is_empty() && !t.eq_ignore_ascii_case(shown[i].text.trim())).then(|| {
             let mut job = LayoutJob::simple(t.to_string(), small.clone(), Color32::WHITE, wrap);
@@ -656,16 +792,16 @@ fn show_lyrics(app: &mut App, ui: &mut Ui, rect: Rect, footer_at: Rect, track: &
         })
     };
     // Every line's height in both faces (a line's height is the larger, so the layout
-    // doesn't shift as it becomes current). They depend only on the text, fonts and
-    // width, so they're measured once, not every frame (the visualizer repaints at
-    // 60 fps); to draw, only the lines in view are laid out.
+    // doesn't shift as it becomes current), direction and alignment. They depend only
+    // on the text, fonts and width, so they're worked out once, not every frame (the
+    // visualizer repaints at 60 fps); to draw, only the lines in view are laid out.
     let key = Id::new((
         &track.key,
         lyrics.lines.as_ptr() as usize,
         lyrics.lines.len(),
         tr_lines.map(|t| (t.as_ptr() as usize, t.len())),
         (only, below, st.bold, align),
-        (&regular, &strong, &small),
+        (&regular, &strong, &small, &back_font),
         (wrap.to_bits(), ui.ctx().pixels_per_point().to_bits()),
     ));
     let measured = ui.data(|d| d.get_temp::<(Id, std::sync::Arc<Measured>)>(Id::new("lyrics-measured"))).filter(|(k, _)| *k == key).map(|(_, m)| m);
@@ -680,16 +816,42 @@ fn show_lyrics(app: &mut App, ui: &mut Ui, rect: Rect, footer_at: Rect, track: &
                 .enumerate()
                 .map(|(i, l)| {
                     let text = tl.get(i).filter(|t| !t.trim().is_empty()).unwrap_or(&l.text).clone();
-                    Line { start_ms: l.start_ms, end_ms: l.end_ms, text, tokens: Vec::new() }
+                    Line { start_ms: l.start_ms, end_ms: l.end_ms, text, voice: l.voice, ..Default::default() }
                 })
                 .collect()
         });
         let shown = translated.as_deref().unwrap_or(&lyrics.lines);
-        let height = |font: &egui::FontId, l: &Line| ui.painter().layout_job(line_job(l, font.clone(), wrap, align, None, &st)).size().y;
-        let plain: Vec<f32> = shown.iter().map(|l| height(&regular, l)).collect();
-        let bold = if st.bold { shown.iter().map(|l| height(&strong, l)).collect() } else { plain.clone() };
-        let trans = (0..shown.len()).map(|i| trans_job(i, shown).map(|j| ui.painter().layout_job(j).size().y)).collect();
-        let m = std::sync::Arc::new(Measured { translated, plain, bold, trans });
+        let rtl: Vec<bool> = shown.iter().map(|l| lyrics::is_rtl(&l.text)).collect();
+        // A duet puts its voices on two sides; centered lyrics can't, so there the
+        // lead goes left, the other voice right and everyone together stays centered.
+        let duet = shown.iter().any(|l| l.voice == lyrics::Voice::Other);
+        let aligns: Vec<egui::Align> = shown
+            .iter()
+            .zip(&rtl)
+            .map(|(l, &r)| {
+                let base = match (align, l.voice) {
+                    (egui::Align::Center, lyrics::Voice::Lead) if duet => egui::Align::LEFT,
+                    (egui::Align::Center, lyrics::Voice::Other) => egui::Align::LEFT,
+                    _ => align,
+                };
+                let a = if r { mirror(base) } else { base };
+                if l.voice == lyrics::Voice::Other { mirror(a) } else { a }
+            })
+            .collect();
+        // A right-to-left line is drawn piece by piece only when it fits on one row:
+        // egui breaks rows left to right, which would put its last words first.
+        let fits = |l: &Line| ui.painter().layout_no_wrap(l.text.clone(), strong.clone(), Color32::WHITE).size().x <= wrap;
+        let tagged: Vec<bool> = shown.iter().zip(&rtl).map(|(l, &r)| !l.tokens.is_empty() && (!r || fits(l))).collect();
+        let height = |font: &egui::FontId, i: usize| ui.painter().layout_job(line_job(&shown[i].text, &shown[i].tokens, font.clone(), wrap, aligns[i], rtl[i], tagged[i])).size().y;
+        let plain: Vec<f32> = (0..shown.len()).map(|i| height(&regular, i)).collect();
+        let bold = if st.bold { (0..shown.len()).map(|i| height(&strong, i)).collect() } else { plain.clone() };
+        let back = shown
+            .iter()
+            .enumerate()
+            .map(|(i, l)| l.backing.as_ref().map(|b| ui.painter().layout_job(line_job(&b.text, &b.tokens, back_font.clone(), wrap, aligns[i], rtl[i], !b.tokens.is_empty() && !rtl[i])).size().y))
+            .collect();
+        let trans = (0..shown.len()).map(|i| trans_job(i, shown, aligns[i]).map(|j| ui.painter().layout_job(j).size().y)).collect();
+        let m = std::sync::Arc::new(Measured { translated, plain, bold, back, trans, rtl, tagged, align: aligns });
         ui.data_mut(|d| d.insert_temp(Id::new("lyrics-measured"), (key, m.clone())));
         m
     });
@@ -697,30 +859,13 @@ fn show_lyrics(app: &mut App, ui: &mut Ui, rect: Rect, footer_at: Rect, track: &
 
     let offset = app.lyrics_offset_total();
     let pos = app.lyrics_position();
+    // The line the view follows, and every line being sung (more than one where voices overlap).
     let cur = lyrics.line_at(pos);
-    // The word being sung brightens in a few steps, and a frame is drawn when the next
-    // step or word is due (rather than 30 times a second, which costs most of the CPU
-    // Glass uses while playing).
-    const STEPS: f32 = 6.0;
-    let mut next_change: Option<u64> = None;
-    let sung = cur.filter(|_| !only).and_then(|c| {
-        let tokens = &lyrics.lines[c].tokens;
-        let Some(k) = lyrics.token_at(c, pos) else {
-            next_change = tokens.first().map(|t| t.start_ms);
-            return None;
-        };
-        let t = &tokens[k];
-        let end = t.end_ms.or_else(|| tokens.get(k + 1).map(|n| n.start_ms)).unwrap_or(t.start_ms + 400);
-        let len = end.saturating_sub(t.start_ms).max(1);
-        let step = (pos.saturating_sub(t.start_ms) as f32 / len as f32 * STEPS).floor().min(STEPS);
-        next_change = Some(if step < STEPS { t.start_ms + ((step + 1.0) / STEPS * len as f32).ceil() as u64 } else { tokens.get(k + 1).map_or(end, |n| n.start_ms) });
-        Some((k, step / STEPS))
-    });
-    let lay = |ui: &Ui, i: usize, font: &egui::FontId, sung: Option<(usize, f32)>| ui.painter().layout_job(line_job(&shown[i], font.clone(), wrap, align, sung, &st));
-    let trans_gap = size * 0.14;
+    let active = lyrics.active(pos);
+    let reduce = theme::reduce_motion();
     // How a new line arrives. With Reduce Motion on, movement becomes a
     // cross-fade (as Apple recommends) instead of stopping altogether.
-    let motion = match (st.animation.as_str(), theme::reduce_motion()) {
+    let motion = match (st.animation.as_str(), reduce) {
         ("none", _) => "none",
         (_, true) => "fade",
         (m, false) => m,
@@ -730,14 +875,18 @@ fn show_lyrics(app: &mut App, ui: &mut Ui, rect: Rect, footer_at: Rect, track: &
     // How "current" each nearby line is, easing in and out as lines change.
     let emphasis: Vec<f32> = (0..shown.len())
         .map(|i| {
-            let near = cur.is_some_and(|c| i.abs_diff(c) <= 2);
-            if near { ease_out_cubic(ui.ctx().animate_value_with_time(Id::new(("lyric-e", &track.key, i)), if Some(i) == cur { 1.0 } else { 0.0 }, line_secs)) } else { 0.0 }
+            let on = active.contains(&i) || (active.is_empty() && Some(i) == cur && lyrics.line_end(i) == u64::MAX);
+            let near = on || cur.is_some_and(|c| i.abs_diff(c) <= 2);
+            if near { ease_out_cubic(ui.ctx().animate_value_with_time(Id::new(("lyric-e", &track.key, i)), if on { 1.0 } else { 0.0 }, line_secs)) } else { 0.0 }
         })
         .collect();
+    let lay = |ui: &Ui, i: usize, font: &egui::FontId| ui.painter().layout_job(line_job(&shown[i].text, &shown[i].tokens, font.clone(), wrap, m.align[i], m.rtl[i], m.tagged[i]));
+    let trans_gap = size * 0.14;
     // A line is as tall as it's drawn: the bold current line may wrap where
     // the regular one doesn't, so its height eases with its emphasis.
     let main_h = |i: usize| m.plain[i] + (m.bold[i] - m.plain[i]) * emphasis[i];
-    let height = |i: usize| main_h(i) + m.trans[i].map(|h| trans_gap + h).unwrap_or(0.0);
+    let back_h = |i: usize| m.back[i].map(|h| trans_gap + h).unwrap_or(0.0);
+    let height = |i: usize| main_h(i) + back_h(i) + m.trans[i].map(|h| trans_gap + h).unwrap_or(0.0);
     let mut tops = Vec::with_capacity(shown.len());
     let mut y = 0.0;
     for i in 0..shown.len() {
@@ -771,8 +920,40 @@ fn show_lyrics(app: &mut App, ui: &mut Ui, rect: Rect, footer_at: Rect, track: &
         _ => 0.38,
     };
     let anchor = body.top() + body.height() * place;
+    let anchor_x = |a: egui::Align| match a {
+        egui::Align::Center => rect.center().x,
+        egui::Align::RIGHT => rect.right(),
+        _ => rect.left(),
+    };
     let painter = ui.painter().with_clip_rect(body.expand2(vec2(sp(2.0), 0.0)));
     let (current_color, other_color, highlight) = (st.current.color32(), st.other.color32(), st.highlight.color32());
+    // Word timing: words still to come are dim, the word being sung lights up bright,
+    // and sung words settle into the line's color a moment after they're sung.
+    let bright = sung_color(highlight, current_color, col::text());
+    let waiting_color = current_color.gamma_multiply(0.4);
+    // The theme's word timing: words may light a little early (or late) and stay bright
+    // for a while; the lines keep their own time.
+    let word_pos = word_position(pos, st.word_lead);
+    let glow = st.word_glow as f32;
+    let sweep = |tokens: &[lyrics::Token], end: u64| -> (Vec<f32>, Vec<Color32>) {
+        let progress: Vec<f32> = lyrics::token_progress(tokens, end, word_pos).collect();
+        let lit = (0..tokens.len())
+            .map(|k| {
+                let done = lyrics::token_end(tokens, k, end);
+                let settle = if word_pos < done {
+                    0.0
+                } else if glow <= 0.0 {
+                    1.0
+                } else {
+                    ((word_pos - done) as f32 / glow).min(1.0)
+                };
+                mix(bright, current_color, settle)
+            })
+            .collect();
+        (progress, lit)
+    };
+    // Reduce Motion: no moving edge (see `wipe`).
+    let band = if reduce { 0.0 } else { size * 0.45 };
     let mut seek = None;
     // Draws every visible line at `scroll`, at `alpha`; only one pass takes clicks.
     let mut pass = |ui: &Ui, scroll: f32, alpha: f32, interactive: bool| {
@@ -783,6 +964,7 @@ fn show_lyrics(app: &mut App, ui: &mut Ui, rect: Rect, footer_at: Rect, track: &
                 continue;
             }
             let e = emphasis[i];
+            let x = anchor_x(m.align[i]);
             // Lines fade with distance from the current one.
             let dist = (((top + h / 2.0) - anchor).abs() / (body.height() * 0.6)).min(1.0);
             let other = other_color.gamma_multiply(1.0 - dist * st.fade);
@@ -794,7 +976,7 @@ fn show_lyrics(app: &mut App, ui: &mut Ui, rect: Rect, footer_at: Rect, track: &
             if interactive {
                 let resp = ui.interact(hit.intersect(body), Id::new(("lyric-line", i)), Sense::click());
                 resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &shown[i].text));
-                if resp.hovered() && Some(i) != cur {
+                if resp.hovered() && !active.contains(&i) {
                     color = lerp_color(color, current_color, 0.6);
                 }
                 if resp.on_hover_cursor(CursorIcon::PointingHand).on_hover_text("Play from this line").clicked() {
@@ -803,33 +985,53 @@ fn show_lyrics(app: &mut App, ui: &mut Ui, rect: Rect, footer_at: Rect, track: &
             }
             let mh = main_h(i);
             // Regular and bold cross-fade in place, from the line's top.
-            let draw = |g: std::sync::Arc<egui::Galley>, a: f32, c: Option<Color32>| {
+            let draw = |g: std::sync::Arc<egui::Galley>, at: egui::Pos2, a: f32, c: Option<Color32>| {
                 if a * alpha <= 0.01 {
                     return;
                 }
-                let mut shape = egui::epaint::TextShape::new(pos2(anchor_x, top), g, color);
+                let mut shape = egui::epaint::TextShape::new(at, g, color);
                 shape.override_text_color = c;
                 shape.opacity_factor = a * alpha;
                 painter.add(shape);
             };
-            let plain = lay(ui, i, &regular, None);
-            if Some(i) == cur && sung.is_some() && !shown[i].tokens.is_empty() {
-                // Word by word: the timed line carries its own colors.
-                draw(plain, 1.0 - e, Some(color));
-                draw(lay(ui, i, &strong, sung), e, None);
+            let plain = lay(ui, i, &regular);
+            let bold = |ui: &Ui| if st.bold { lay(ui, i, &strong) } else { plain.clone() };
+            let at = pos2(x, top);
+            let sung = m.tagged[i] && !only && e > 0.01;
+            if sung {
+                // Word by word: each piece sweeps from waiting to lit as it's sung.
+                let (progress, lit) = sweep(&shown[i].tokens, lyrics.line_end(i));
+                let waiting = mix(color, waiting_color, e);
+                let lit: Vec<Color32> = lit.into_iter().map(|c| mix(color, c, e)).collect();
+                draw(wipe(&plain, &progress, &lit, waiting, m.rtl[i], band), at, 1.0 - e, None);
+                draw(wipe(&bold(ui), &progress, &lit, waiting, m.rtl[i], band), at, e, None);
             } else {
                 // Bold only matters while it shows (and when it's another face).
-                let bold = if st.bold && e > 0.01 { lay(ui, i, &strong, None) } else { plain.clone() };
-                draw(plain, 1.0 - e, Some(color));
-                draw(bold, e, Some(color));
+                let b = if st.bold && e > 0.01 { bold(ui) } else { plain.clone() };
+                draw(plain, at, 1.0 - e, Some(color));
+                draw(b, at, e, Some(color));
+            }
+            // Backing vocals: quieter, under the line, swept on their own timing.
+            if let Some(b) = shown[i].backing.as_ref().filter(|_| m.back[i].is_some()) {
+                let tagged = !b.tokens.is_empty() && !m.rtl[i];
+                let g = ui.painter().layout_job(line_job(&b.text, &b.tokens, back_font.clone(), wrap, m.align[i], m.rtl[i], tagged));
+                let at = pos2(x, top + mh + trans_gap);
+                let bc = lerp_color(other.gamma_multiply(0.75), current_color.gamma_multiply(0.8), e);
+                if tagged && e > 0.01 {
+                    let (progress, lit) = sweep(&b.tokens, lyrics.line_end(i));
+                    let lit: Vec<Color32> = lit.into_iter().map(|c| mix(bc, c.gamma_multiply(0.85), e)).collect();
+                    draw(wipe(&g, &progress, &lit, mix(bc, waiting_color.gamma_multiply(0.85), e), false, band * 0.66), at, 1.0, None);
+                } else {
+                    draw(g, at, 1.0, Some(bc));
+                }
             }
             if m.trans[i].is_some()
-                && let Some(job) = trans_job(i, shown)
+                && let Some(job) = trans_job(i, shown, m.align[i])
             {
                 // The translation: quieter than its line, brighter when it's current.
                 let g = ui.painter().layout_job(job);
                 let tc = lerp_color(other.gamma_multiply(0.8), current_color.gamma_multiply(0.82), e);
-                let mut shape = egui::epaint::TextShape::new(pos2(anchor_x, top + mh + trans_gap), g, tc);
+                let mut shape = egui::epaint::TextShape::new(pos2(x, top + mh + back_h(i) + trans_gap), g, tc);
                 shape.override_text_color = Some(tc);
                 shape.opacity_factor = alpha;
                 painter.add(shape);
@@ -868,30 +1070,118 @@ fn show_lyrics(app: &mut App, ui: &mut Ui, rect: Rect, footer_at: Rect, track: &
             d.remove::<f32>(manual_id);
         }
     });
-    if app.pb.is_playing || app.local.as_ref().is_some_and(|l| l.is_playing()) {
-        // The next frame that matters: the sung word's next step, or the next line's
-        // start (the scroll to it animates by itself).
-        let next_line = lyrics.lines.iter().map(|l| l.start_ms).find(|&s| s > pos);
-        let next = [next_change.filter(|&n| n > pos), next_line].into_iter().flatten().min();
-        let wait = next.map_or(1_000, |n| (n - pos).clamp(16, 5_000));
-        ui.ctx().request_repaint_after(std::time::Duration::from_millis(wait));
+    if app.pb.is_playing || app.local.as_ref().is_some_and(|l| l.is_playing()) || app.scrub_ms.is_some() {
+        let frame = next_frame(lyrics, &active, pos, word_pos, st.word_glow as u64, only, reduce, ui.input(|i| i.focused));
+        ui.ctx().request_repaint_after(std::time::Duration::from_millis(frame));
     }
 }
 
-/// Where the lyrics came from and how well they fit, plus the timing offset.
+/// Where the words are: `pos` moved by the theme's `word_lead` (ms earlier).
+fn word_position(pos: u64, lead: i32) -> u64 {
+    pos.saturating_add_signed(lead as i64)
+}
+
+/// How long until the lyrics look different: a word being swept wants frames
+/// (40 a second in front, 20 behind — the sweep's soft edge keeps that smooth,
+/// and frames are what Glass's CPU goes on); otherwise the next word or line
+/// that starts, or a line that ends (the scroll and fades animate by themselves).
+/// Words go by `word_pos` and settle over `glow` ms; lines go by `pos`.
+#[allow(clippy::too_many_arguments)]
+fn next_frame(lyrics: &Lyrics, active: &[usize], pos: u64, word_pos: u64, glow: u64, only: bool, reduce: bool, focused: bool) -> u64 {
+    let mut next = u64::MAX;
+    // Word times, seen from the lines' clock.
+    let lines_at = |word_ms: u64| word_ms.saturating_add(pos).saturating_sub(word_pos);
+    if !only {
+        for &i in active {
+            let l = &lyrics.lines[i];
+            let end = lyrics.line_end(i);
+            for tokens in std::iter::once(&l.tokens).chain(l.backing.iter().map(|b| &b.tokens)) {
+                for (k, t) in tokens.iter().enumerate() {
+                    let done = lyrics::token_end(tokens, k, end);
+                    if t.start_ms > word_pos {
+                        next = next.min(lines_at(t.start_ms));
+                    } else if word_pos < done {
+                        // With Reduce Motion the word brightens in place: fewer frames do.
+                        return match (focused, reduce) {
+                            (true, false) => 25,
+                            (false, false) | (true, true) => 50,
+                            (false, true) => 100,
+                        };
+                    } else if word_pos < done + glow {
+                        // A sung word settles into the line's color.
+                        return if focused { 33 } else { 66 };
+                    }
+                }
+            }
+        }
+    }
+    let started = lyrics.lines.partition_point(|l| l.start_ms <= pos);
+    if let Some(l) = lyrics.lines.get(started) {
+        next = next.min(l.start_ms);
+    }
+    for &i in active {
+        next = next.min(lyrics.line_end(i));
+    }
+    if next == u64::MAX { 1_000 } else { (next.saturating_sub(pos)).clamp(16, 5_000) }
+}
+
+/// How well the lyrics fit, plus the timing offset and the translation and
+/// picker links. In a narrow window the links drop their words ("文A",
+/// "− 0.0 s +") and the note on the left keeps only the parts that fit whole.
 fn footer(app: &mut App, ui: &mut Ui, rect: Rect, lyrics: &Lyrics, how: Match, res: &Resolved) {
     let small = theme::regular(11.0);
+    let offset = app.lyrics_song_offset();
+    let value = if offset == 0 { "0.0 s".to_string() } else { format!("{:+.1} s", offset as f64 / 1000.0) };
+    let mode = app.config.lyrics().translation;
+    let short = match mode {
+        Mode::Off => "original",
+        Mode::Below => "+ translation",
+        Mode::Only => "translated",
+    };
+    // The note: what's still happening first, then how the lyrics were found.
+    let mut parts: Vec<String> = Vec::new();
+    if res.pending && lyrics.word_coverage() < 0.8 {
+        parts.push("looking for word timing…".into());
+    }
+    if app.lyrics_lines_only {
+        parts.push("line by line".into());
+    }
+    parts.push(
+        match how {
+            Match::Exact => "exact match",
+            Match::Search => "matched by search",
+            Match::Manual => "your pick",
+        }
+        .into(),
+    );
+    if res.fell_back() {
+        parts.push(format!("{} had none", res.tried[0].0.name()));
+    }
+    if let Some(l) = &lyrics.language {
+        parts.push(l.clone());
+    }
+    // Word timing from a service, or line by line (LRCLIB's): the user's choice, per song.
+    let lines_link = if app.lyrics_lines_only {
+        Some(("word timing", "Look for word-by-word timing for this song again", false))
+    } else if lyrics.source.provider != ProviderId::Lrclib && lyrics.word_coverage() >= 0.8 && res.tried.iter().any(|(p, what)| *p == ProviderId::Lrclib && what.starts_with("found")) {
+        Some(("LRCLIB lines", "Show this song line by line with LRCLIB's lyrics (or your pick) instead of word timing. Remembered for this song.", true))
+    } else {
+        None
+    };
+    let painter = ui.painter().clone();
+    let width = |t: &str| painter.layout_no_wrap(t.to_string(), small.clone(), col::muted()).size().x;
+    let links = format!("文A {short}    {}wrong lyrics?    − timing {value} +", lines_link.map(|(l, ..)| format!("{l}    ")).unwrap_or_default());
+    let compact = rect.width() - width(&links) < width(&parts[parts.len() - 1]) + sp(3.0);
     // Right: "文A original   wrong lyrics?   −  timing 0.0 s  +". Laid out first; the
-    // provider note on the left gets what's left.
+    // note on the left gets what's left.
     let used = ui
         .scope_builder(UiBuilder::new().max_rect(rect).layout(egui::Layout::right_to_left(egui::Align::Center)), |ui| {
             // This song's own timing (kept for it); [ and ] change it too.
-            let offset = app.lyrics_song_offset();
             if widgets::link(ui, "+", theme::regular(13.0), col::sub()).on_hover_text("Show lyrics 0.1 s earlier for this song  ]").clicked() {
                 app.act(Action::LyricsSongOffset(offset + 100));
             }
-            let value = if offset == 0 { "timing 0.0 s".to_string() } else { format!("timing {:+.1} s", offset as f64 / 1000.0) };
-            let label = ui.add(egui::Label::new(RichText::new(value).font(small.clone()).color(if offset == 0 { col::muted() } else { col::sub() })).sense(Sense::click()));
+            let text = if compact { value.clone() } else { format!("timing {value}") };
+            let label = ui.add(egui::Label::new(RichText::new(text).font(small.clone()).color(if offset == 0 { col::muted() } else { col::sub() })).sense(Sense::click()));
             if label.on_hover_text("This song's timing, remembered for it. Positive shows lyrics earlier. Double-click to reset.").double_clicked() {
                 app.act(Action::LyricsSongOffset(0));
             }
@@ -903,45 +1193,45 @@ fn footer(app: &mut App, ui: &mut Ui, rect: Rect, lyrics: &Lyrics, how: Match, r
                 app.act(Action::LyricsOpenPicker);
             }
             ui.add_space(sp(2.0));
+            if let Some((label, hint, on)) = lines_link {
+                if widgets::link(ui, label, small.clone(), col::muted()).on_hover_text(hint).clicked() {
+                    app.act(Action::LyricsLinesOnly(on));
+                }
+                ui.add_space(sp(2.0));
+            }
             // Original / original + translation / translated  (T).
-            let mode = app.config.lyrics().translation;
             let color = if mode == Mode::Off { col::muted() } else { col::accent() };
-            let short = match mode {
-                Mode::Off => "original",
-                Mode::Below => "+ translation",
-                Mode::Only => "translated",
-            };
-            if widgets::link(ui, &format!("文A {short}"), small.clone(), color).on_hover_text("Translation — click or press T: original · original + translation · translated").clicked() {
+            let text = if compact { "文A".to_string() } else { format!("文A {short}") };
+            if widgets::link(ui, &text, small.clone(), color).on_hover_text(format!("Translation: {short} — click or press T: original · original + translation · translated")).clicked() {
                 app.act(Action::LyricsTranslation(mode.next()));
             }
         })
         .response
         .rect;
     let left = Rect::from_min_max(rect.min, pos2((used.left() - sp(2.0)).max(rect.left()), rect.bottom()));
-    let how_text = match how {
-        Match::Exact => "exact match",
-        Match::Search => "matched by search",
-        Match::Manual => "your pick",
-    };
-    let mut text = format!("{} · {how_text}", lyrics.source.provider.name());
-    if res.fell_back() {
-        text.push_str(&format!(" · {} had none", res.tried[0].0.name()));
-    }
-    if let Some(l) = &lyrics.language {
-        text.push_str(&format!(" · {l}"));
+    // As many whole parts as fit; never a cut-off word.
+    let mut text = String::new();
+    for p in &parts {
+        let next = if text.is_empty() { p.clone() } else { format!("{text} · {p}") };
+        if width(&next) > left.width() {
+            break;
+        }
+        text = next;
     }
     let s = &lyrics.source;
     let detail = format!(
-        "Lyrics from {} (record {}): “{}” — {}{} · {}.\nLyrics belong to their rights holders and are shown here for personal use.",
+        "Lyrics from {} (record {}): “{}” — {}{} · {}.\n{}.\nLyrics belong to their rights holders and are shown here for personal use.",
         s.provider.label(),
         s.id,
         s.title,
         s.artist,
         if s.album.is_empty() { String::new() } else { format!(" · {}", s.album) },
-        model::fmt_ms(s.duration_ms)
+        model::fmt_ms(s.duration_ms),
+        parts.join(" · ")
     );
     ui.scope_builder(UiBuilder::new().max_rect(left).layout(egui::Layout::left_to_right(egui::Align::Center)), |ui| {
-        ui.add(egui::Label::new(RichText::new(text).font(small.clone()).color(col::muted())).truncate()).on_hover_text(detail);
+        let r = if text.is_empty() { ui.allocate_response(left.size(), Sense::hover()) } else { ui.add(egui::Label::new(RichText::new(text).font(small.clone()).color(col::muted())).truncate()) };
+        r.on_hover_text(detail);
     });
 }
 
@@ -1014,4 +1304,84 @@ fn picker(app: &mut App, ui: &mut Ui, rect: Rect) {
             app.act(Action::LyricsClosePicker);
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A timed line laid out once, then swept: sung pieces take their lit color, the
+    /// piece being sung is lit on its leading side only, the rest wait — and the
+    /// layout itself is shared, not redone.
+    #[test]
+    fn the_sweep_recolors_without_laying_out_again() {
+        let ctx = egui::Context::default();
+        // A pass, so the fonts exist (its texture upload is nobody's business here).
+        ctx.run_ui(Default::default(), |_| {}).textures_delta.clear();
+        let tokens: Vec<lyrics::Token> =
+            ["one ", "two ", "three"].iter().enumerate().map(|(k, t)| lyrics::Token { text: t.to_string(), start_ms: k as u64 * 1000, end_ms: Some(k as u64 * 1000 + 900) }).collect();
+        let font = egui::FontId::monospace(20.0);
+        let g = ctx.fonts_mut(|f| f.layout_job(line_job("one two three", &tokens, font.clone(), 400.0, egui::Align::LEFT, false, true)));
+        let (lit, waiting) = (Color32::from_rgb(255, 0, 0), Color32::from_rgb(0, 0, 255));
+        let swept = wipe(&g, &[1.0, 0.5, 0.0], &[lit; 3], waiting, false, 10.0);
+        let row = &swept.rows[0].row;
+        // Glyph quads in reading order: "one" (3), "two" (3), "three" (5) — spaces have none.
+        let quads: Vec<&[egui::epaint::Vertex]> = row.visuals.mesh.vertices[row.visuals.glyph_vertex_range.clone()].chunks(4).collect();
+        assert_eq!(quads.len(), 11);
+        assert!(quads[..3].iter().flat_map(|q| q.iter()).all(|v| v.color == lit), "sung");
+        assert!(quads[6..].iter().flat_map(|q| q.iter()).all(|v| v.color == waiting), "still to come");
+        // "two", half sung: lit at its start, waiting at its end, a blend at the edge.
+        assert!(quads[3].iter().all(|v| v.color == lit));
+        assert!(quads[5].iter().all(|v| v.color == waiting));
+        // The edge falls inside "w": its leading corners lit, its trailing ones not, and the
+        // GPU blends across the glyph between them.
+        assert!(quads[4].iter().any(|v| v.color != waiting) && quads[4].iter().any(|v| v.color != lit), "the edge runs through the middle letter");
+        // The same layout (shared glyphs), only the colors differ.
+        assert_eq!(swept.rows[0].row.glyphs.len(), g.rows[0].row.glyphs.len());
+        // Right to left, the sweep starts at the right.
+        let rtl = wipe(&g, &[0.0, 0.5, 0.0], &[lit; 3], waiting, true, 10.0);
+        let q: Vec<&[egui::epaint::Vertex]> = rtl.rows[0].row.visuals.mesh.vertices[rtl.rows[0].row.visuals.glyph_vertex_range.clone()].chunks(4).collect();
+        assert!(q[5].iter().all(|v| v.color == lit) && q[3].iter().all(|v| v.color == waiting));
+        // Reduce Motion (no band): the piece brightens in place, evenly.
+        let still = wipe(&g, &[0.0, 0.5, 0.0], &[lit; 3], waiting, false, 0.0);
+        let q: Vec<&[egui::epaint::Vertex]> = still.rows[0].row.visuals.mesh.vertices[still.rows[0].row.visuals.glyph_vertex_range.clone()].chunks(4).collect();
+        let c = q[3][0].color;
+        assert!(c != lit && c != waiting && q[3..6].iter().flat_map(|q| q.iter()).all(|v| v.color == c));
+        // A translucent waiting color blends as it is, never darker than itself.
+        let dim = Color32::from_rgb(200, 200, 200).gamma_multiply(0.45);
+        assert_eq!(mix(dim, lit, 0.0), dim);
+        assert!(mix(dim, Color32::WHITE, 0.5).r() > dim.r());
+    }
+
+    #[test]
+    fn the_word_being_sung_always_stands_out() {
+        let text = Color32::from_rgb(0xE9, 0xE4, 0xDC);
+        // A dark theme highlight (#481947) under a purple line (#6D3A78): lifted toward the text color instead.
+        let c = sung_color(Color32::from_rgb(0x48, 0x19, 0x47), Color32::from_rgb(0x6D, 0x3A, 0x78), text);
+        assert!(luminance(c) > luminance(Color32::from_rgb(0x6D, 0x3A, 0x78)) + 0.2, "{c:?}");
+        // A bright highlight is used as it is.
+        let pink = Color32::from_rgb(0xF0, 0x80, 0xE0);
+        assert_eq!(sung_color(pink, Color32::from_rgb(0x6D, 0x3A, 0x78), text), pink);
+    }
+
+    #[test]
+    fn frames_only_while_a_word_is_being_sung() {
+        let l = lyrics::sample::outcome(&TrackRef { key: "k".into(), title: "t".into(), artists: vec!["a".into()], duration_ms: 214_000, ..Default::default() });
+        let Outcome::Found { lyrics: l, .. } = l else { panic!() };
+        let s = lyrics::sample::start;
+        let at = |pos: u64, reduce: bool, focused: bool| next_frame(&l, &l.active(pos), pos, pos, 400, false, reduce, focused);
+        assert_eq!(at(s(0) + 100, false, true), 25, "a word being swept: 40 frames a second in front");
+        assert_eq!(at(s(0) + 100, false, false), 50, "20 behind");
+        assert_eq!(at(s(0) + 100, true, false), 100, "Reduce Motion: brightening in place needs fewer");
+        assert_eq!(at(10_000, false, true), 5_000, "before the lyrics: nothing until the first line (looked at every 5 s)");
+        assert_eq!(at(s(0) - 300, false, true), 300);
+        assert_eq!(next_frame(&l, &l.active(s(0) + 100), s(0) + 100, s(0) + 100, 400, true, false, true), 5_000, "translated lines are whole: nothing until the next line (at most 5 s)");
+        // The theme's word timing: words a little early or late, lines where they were.
+        assert_eq!((word_position(10_000, 250), word_position(10_000, -300), word_position(100, -300)), (10_250, 9_700, 0));
+        let first = &l.lines[0];
+        let (word, end) = (first.tokens[0].start_ms, l.line_end(0));
+        let late = word_position(word + 100, -500);
+        assert_eq!(next_frame(&l, &l.active(word + 100), word + 100, late, 400, false, false, true), 400, "500 ms late, the first word lights in 400 ms");
+        assert!(end > word + 1_000);
+    }
 }

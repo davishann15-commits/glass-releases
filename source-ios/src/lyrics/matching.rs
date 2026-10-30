@@ -190,13 +190,71 @@ fn overlap(a: &str, b: &str) -> f32 {
     a.intersection(&b).count() as f32 / a.len().min(b.len()) as f32
 }
 
+/// Whether a name is written in Latin letters (`Some(true)`), in another
+/// script only (`Some(false)`), or mixes them or has no letters (`None`).
+fn latin(s: &str) -> Option<bool> {
+    let (mut latin, mut other) = (false, false);
+    for c in s.chars().filter(|c| c.is_alphabetic()) {
+        if c.is_ascii_alphabetic() || ('\u{00C0}'..='\u{024F}').contains(&c) || ('\u{1E00}'..='\u{1EFF}').contains(&c) {
+            latin = true;
+        } else {
+            other = true;
+        }
+    }
+    match (latin, other) {
+        (true, false) => Some(true),
+        (false, true) => Some(false),
+        _ => None,
+    }
+}
+
+/// The same name in two scripts can't be compared ("Anri" and "杏里"):
+/// one is in Latin letters, the other has none.
+fn other_script(a: &str, b: &str) -> bool {
+    matches!((latin(a), latin(b)), (Some(x), Some(y)) if x != y)
+}
+
 /// Seconds apart that still count as the same recording.
 pub const SAME_RECORDING_S: f32 = 3.0;
 
-/// How well a record fits. `None` means it's a different recording (or a
-/// different song) and must not be chosen automatically.
+/// What a provider says about a recording, as far as matching cares.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Info<'a> {
+    pub title: &'a str,
+    pub artist: &'a str,
+    pub album: &'a str,
+    /// 0 when the provider doesn't say.
+    pub duration_ms: u64,
+    pub instrumental: bool,
+    /// Line timing at least.
+    pub synced: bool,
+    /// Word timing.
+    pub words: bool,
+}
+
+impl Record {
+    pub fn info(&self) -> Info<'_> {
+        Info {
+            title: &self.track_name,
+            artist: &self.artist_name,
+            album: &self.album_name,
+            duration_ms: self.duration_ms,
+            instrumental: self.instrumental,
+            synced: self.synced.is_some() || self.lyricsfile.as_deref().is_some_and(|f| f.contains("start_ms")),
+            words: self.has_word_sync,
+        }
+    }
+}
+
+/// How well an LRCLIB record fits. `None` means it's a different recording
+/// (or a different song) and must not be chosen automatically.
 pub fn score(q: &TrackRef, r: &Record) -> Option<f32> {
-    let (tq, tr) = (title(&q.title), title(&r.track_name));
+    score_info(q, &r.info())
+}
+
+/// How well a recording fits (see [`score`]).
+pub fn score_info(q: &TrackRef, r: &Info) -> Option<f32> {
+    let (tq, tr) = (title(&q.title), title(r.title));
     if tq.versions != tr.versions {
         return None;
     }
@@ -209,11 +267,16 @@ pub fn score(q: &TrackRef, r: &Record) -> Option<f32> {
         return None;
     };
     // Artists: any credited artist appearing in the record's artist field
-    // (LRCLIB often lists only the main artist, or "A, B" / "A & B").
-    let ra = normalize(&r.artist_name);
+    // (providers often list only the main artist, or "A, B" / "A & B").
+    let ra = normalize(r.artist);
+    let same_album = !q.album.is_empty() && !album(&q.album).is_empty() && album(&q.album) == album(r.album);
     let artist_score = if q.artists.iter().map(|a| normalize(a)).any(|a| !a.is_empty() && (has_word(&ra, &a) || ra == a)) {
         1.0
     } else if q.artists.iter().any(|a| overlap(&normalize(a), &ra) >= 0.5) {
+        0.5
+    } else if tq.base == tr.base && same_album && q.artists.iter().any(|a| other_script(a, r.artist)) {
+        // The artist's name in another script (Spotify's "Anri", NetEase's
+        // "杏里"): the same title on the same album is the same recording.
         0.5
     } else {
         return None;
@@ -232,8 +295,8 @@ pub fn score(q: &TrackRef, r: &Record) -> Option<f32> {
             return None;
         }
     };
-    let album_score = if !q.album.is_empty() && album(&q.album) == album(&r.album_name) { 0.3 } else { 0.0 };
-    let lyrics_score = match (r.instrumental, r.synced.is_some() || r.lyricsfile.as_deref().is_some_and(|f| f.contains("start_ms")), r.has_word_sync) {
+    let album_score = if same_album { 0.3 } else { 0.0 };
+    let lyrics_score = match (r.instrumental, r.synced, r.words) {
         // A record marked instrumental for a song that isn't: probably wrong.
         (true, ..) if !tq.versions.contains(&Version::Instrumental) => -0.5,
         (true, ..) => 0.2,
@@ -242,6 +305,20 @@ pub fn score(q: &TrackRef, r: &Record) -> Option<f32> {
         _ => 0.0,
     };
     Some(title_score + artist_score + duration_score + album_score + lyrics_score)
+}
+
+/// For word timing, the recording must be the very one playing: both lengths
+/// known and within a few seconds, besides everything [`score_info`] checks.
+pub fn strict(q: &TrackRef, r: &Info) -> Option<f32> {
+    if q.duration_ms == 0 || r.duration_ms == 0 || (q.duration_ms as f32 - r.duration_ms as f32).abs() / 1000.0 > SAME_RECORDING_S {
+        return None;
+    }
+    score_info(q, r)
+}
+
+/// The best of `found` for `q` under [`strict`] matching: its index.
+pub fn best_strict<'a>(q: &TrackRef, found: impl IntoIterator<Item = Info<'a>>) -> Option<usize> {
+    found.into_iter().enumerate().filter_map(|(i, r)| strict(q, &r).map(|s| (i, s))).max_by(|a, b| a.1.total_cmp(&b.1).then(b.0.cmp(&a.0))).map(|(i, _)| i)
 }
 
 /// The result of matching search results against a track.
@@ -273,6 +350,39 @@ pub fn choose(q: &TrackRef, records: &[Record]) -> Choice {
     if contenders.len() > 1 && disagree { Choice::Ambiguous(contenders.into_iter().take(8).collect()) } else { Choice::Best(best) }
 }
 
+/// The title as written, without the remaster/feature notes services file
+/// songs without ("Levitating (feat. DaBaby) - 2020 Remaster" → "Levitating"),
+/// for services that look a title up as given. Live, remix and other version
+/// markers stay: they name another recording.
+pub fn plain_title(s: &str) -> String {
+    let mut out = String::new();
+    let mut rest = s;
+    loop {
+        let Some(open) = rest.find(['(', '[']) else {
+            out.push_str(rest);
+            break;
+        };
+        let close_char = if rest[open..].starts_with('(') { ')' } else { ']' };
+        let Some(len) = rest[open + 1..].find(close_char) else {
+            out.push_str(rest);
+            break;
+        };
+        let inner = &rest[open + 1..open + 1 + len];
+        out.push_str(&rest[..open]);
+        if classify(inner).is_none_or(|v| !v.is_empty()) {
+            out.push_str(&rest[open..open + len + 2]);
+        }
+        rest = &rest[open + 1 + len + 1..];
+    }
+    let mut parts: Vec<&str> = out.split(" - ").collect();
+    while parts.len() > 1 && classify(parts[parts.len() - 1]).is_some_and(|v| v.is_empty()) {
+        parts.pop();
+    }
+    let joined = parts.join(" - ");
+    let t = joined.split_whitespace().collect::<Vec<_>>().join(" ");
+    if t.is_empty() { s.trim().to_string() } else { t }
+}
+
 /// The text to search LRCLIB with: the title without version noise that
 /// would make keyword search miss ("feat. X", "2011 Remaster").
 pub fn search_title(s: &str) -> String {
@@ -285,7 +395,7 @@ mod tests {
     use super::*;
 
     fn track(title: &str, artists: &[&str], album: &str, secs: u64) -> TrackRef {
-        TrackRef { key: "spotify:track:x".into(), title: title.into(), artists: artists.iter().map(|s| s.to_string()).collect(), album: album.into(), duration_ms: secs * 1000 }
+        TrackRef { key: "spotify:track:x".into(), title: title.into(), artists: artists.iter().map(|s| s.to_string()).collect(), album: album.into(), duration_ms: secs * 1000, ..Default::default() }
     }
 
     fn rec(id: u64, title: &str, artist: &str, album: &str, secs: f64, synced: &str) -> Record {
@@ -375,6 +485,44 @@ mod tests {
         let words = rec(2, "Song", "Artist", "Album", 201.0, "[00:01.00]la la");
         assert_eq!(choose(&q, &[inst.clone(), words]), Choice::Best(1));
         assert_eq!(choose(&q, &[inst]), Choice::Best(0), "alone, an instrumental record is believed");
+    }
+
+    #[test]
+    fn word_timing_needs_the_very_recording() {
+        let q = track("Blinding Lights", &["The Weeknd"], "After Hours", 200);
+        let hit = |title, artist, secs: u64| Info { title, artist, album: "", duration_ms: secs * 1000, ..Default::default() };
+        assert!(strict(&q, &hit("Blinding Lights", "The Weeknd", 200)).is_some());
+        assert!(strict(&q, &hit("Blinding Lights", "The Weeknd", 0)).is_none(), "an unknown length can't be trusted with word timing");
+        assert!(strict(&q, &hit("Blinding Lights (Remix)", "The Weeknd, ROSALÍA", 216)).is_none(), "a remix");
+        assert!(strict(&q, &hit("Blinding Lights", "The Weeknd", 205)).is_none(), "5 s off");
+        let unknown = TrackRef { duration_ms: 0, ..q.clone() };
+        assert!(strict(&unknown, &hit("Blinding Lights", "The Weeknd", 200)).is_none());
+        let hits = [hit("Blinding Lights (Remix)", "The Weeknd, ROSALÍA", 216), hit("Blinding Lights", "The Weeknd", 202), hit("Blinding Lights", "The Weeknd", 200)];
+        assert_eq!(best_strict(&q, hits), Some(2), "the closest length wins");
+    }
+
+    #[test]
+    fn an_artist_named_in_another_script() {
+        let q = track("DRIVING MY LOVE", &["Anri"], "Timely!!", 291);
+        let hit = |artist, album| Info { title: "DRIVING MY LOVE", artist, album, duration_ms: 291_426, ..Default::default() };
+        assert!(strict(&q, &hit("杏里", "Timely!!")).is_some(), "NetEase writes Anri as 杏里");
+        assert!(strict(&q, &hit("杏里", "Surf City -Coool Breeze-")).is_none(), "on another album it could be anyone's");
+        assert!(strict(&q, &hit("眠", "")).is_none());
+        assert!(strict(&q, &hit("Kirbie", "Timely!!")).is_none(), "both in Latin letters: just another artist");
+        let mixed = track("DRIVING MY LOVE", &["杏里 Anri"], "Timely!!", 291);
+        assert!(strict(&mixed, &hit("杏里", "Timely!!")).is_some(), "a name in both scripts matches as usual");
+        assert!(
+            strict(&track("Sweet Agnes", &["Masayoshi Takanaka"], "TAKANAKA", 280), &Info { title: "Sweet Agnes", artist: "高中正義", album: "Takanaka", duration_ms: 280_013, ..Default::default() })
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn plain_titles() {
+        assert_eq!(plain_title("Levitating (feat. DaBaby) - 2020 Remaster"), "Levitating");
+        assert_eq!(plain_title("Don't Stop Me Now - Remastered 2011"), "Don't Stop Me Now");
+        assert_eq!(plain_title("Hey Jude (Live at Wembley)"), "Hey Jude (Live at Wembley)", "another recording keeps its name");
+        assert_eq!(plain_title("(I Can't Get No) Satisfaction"), "(I Can't Get No) Satisfaction");
     }
 
     #[test]

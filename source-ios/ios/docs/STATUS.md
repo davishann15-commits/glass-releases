@@ -239,8 +239,9 @@ Running record of what's built and verified, newest last. The parity ledger
 - Real Spotify writes (reorder, save to Spotify, likes by the assistant) and the real
   ChatGPT/OpenAI flows weren't run against your accounts.
 - A signed archive: signing needs your team; nothing about signing is stored.
-- Distribution: 1.0.0-beta.22 is published as an unsigned .ipa (prerelease `ios-v1.0.0-beta.22`
-  on glass-releases, not marked latest so the Mac updater's feed is untouched), with its complete
+- Distribution: 1.0.0-beta.23 is published as an unsigned .ipa (prerelease `ios-v1.0.0-beta.23`
+  on glass-releases, not marked latest so the Mac updater's feed is untouched), together with Mac
+  1.0.0-beta.23 from the same commit (both speak sharing protocol 4), with its complete
   source in glass-releases/source-ios (LAME is linked statically; the source meets the LGPL's
   relinking requirement). The provider constraints in ARCHITECTURE.md still apply.
 
@@ -251,7 +252,9 @@ Running record of what's built and verified, newest last. The parity ledger
 - `xcodegen` must run after adding Swift files (Glass.xcodeproj lists files explicitly).
 - Simulator: "Glass iPhone 17 Pro" (`ios/build/sim-id`). Launch flags: `-demo`,
   `-route playlist|artist|album|home|search|liked|local|settings|nowplaying`,
-  `-pane lyrics|queue|playlist|devices`, `-lyrics word|line|plain|instrumental|none|ambiguous`,
+  `-pane lyrics|queue|playlist|devices`, `-lyrics word|lrclib-word|cjk|line|plain|instrumental|none|ambiguous`
+  (`word`: LRCLIB's lines upgraded to a sample lrc.red word sync with a duet and backing vocals),
+  `-demoAt <ms>` and `-demoPaused` (where the demo song is),
   `-viz`, `-autoSignIn`, `-ephemeralSignIn`, `-demoFree` (the demo account is Spotify Free),
   `-demoShare` (sharing runs for real as the demo account, with the desktop's `GLASS_DEMO_SHARE`),
   `-demoFolders fresh|kept` (the demo's Local Files

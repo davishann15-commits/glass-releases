@@ -84,6 +84,25 @@ fn in_gamut(c: Lab) -> bool {
     c.linear().iter().all(|v| (-0.0005..=1.0005).contains(v))
 }
 
+/// Which parts of the look take the album's colors; the others keep the theme's
+/// (the theme panel's album tab).
+#[derive(serde::Serialize, serde::Deserialize, Clone, Copy, PartialEq, Eq, Hash, Debug)]
+#[serde(default)]
+pub struct AlbumParts {
+    /// The accent and what's drawn with it: focus, selection, the progress bar.
+    pub accent: bool,
+    pub lyrics: bool,
+    pub visualizer: bool,
+    /// The wash behind the window, and the player bar's tint.
+    pub background: bool,
+}
+
+impl Default for AlbumParts {
+    fn default() -> Self {
+        AlbumParts { accent: true, lyrics: true, visualizer: true, background: true }
+    }
+}
+
 /// What a cover contributes to the look.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct Palette {
@@ -150,29 +169,38 @@ impl Palette {
         Some(Palette { accent, wash })
     }
 
-    /// Theme changes, at `amount` (0: the theme's own, 1: the album's).
-    pub fn apply(&self, t: &mut Theme, amount: f32) {
+    /// Theme changes, at `amount` (0: the theme's own, 1: the album's), to the
+    /// `parts` the user wants in the album's colors.
+    pub fn apply(&self, t: &mut Theme, amount: f32, parts: AlbumParts) {
         if amount <= 0.0 {
             return;
         }
         let mix = |from: Rgba, to: Rgba| lerp_rgba(from, to, amount);
         let accent = self.accent.rgba(1.0);
-        // Text on an accent fill: the theme's, unless dark ink reads better.
-        let ink = self.accent.with(0.2, 0.04).rgba(1.0);
-        let on_accent = if contrast(accent, ink) > contrast(accent, t.on_accent) { ink } else { t.on_accent };
-        t.accent = mix(t.accent, accent);
-        t.focus = mix(t.focus, accent);
-        t.selection = mix(t.selection, self.accent.rgba(0.18));
-        t.on_accent = mix(t.on_accent, on_accent);
-        t.player_progress = mix(t.player_progress, accent);
-        t.player_track = mix(t.player_track, self.accent.with(0.9, 0.03).rgba(0.22));
-        t.player_background = mix(t.player_background, self.wash[0].with(self.wash[0].l * 0.8, self.wash[0].chroma()).rgba(t.player_background.0[3] as f32 / 255.0));
-        // Lyrics: the sung line nearly white with a hint of the hue, the sung word in the accent.
-        t.lyrics.current = mix(t.lyrics.current, self.accent.with(0.96, 0.025).rgba(t.lyrics.current.0[3] as f32 / 255.0));
-        t.lyrics.highlight = mix(t.lyrics.highlight, self.accent.with(self.accent.l.max(0.82), self.accent.chroma()).rgba(1.0));
-        t.lyrics.other = mix(t.lyrics.other, self.accent.with(0.9, 0.02).rgba(t.lyrics.other.0[3] as f32 / 255.0));
-        t.viz.color = mix(t.viz.color, accent);
-        t.viz.color2 = mix(t.viz.color2, self.accent.with(0.92, 0.05).rgba(t.viz.color2.0[3] as f32 / 255.0));
+        if parts.accent {
+            // Text on an accent fill: the theme's, unless dark ink reads better.
+            let ink = self.accent.with(0.2, 0.04).rgba(1.0);
+            let on_accent = if contrast(accent, ink) > contrast(accent, t.on_accent) { ink } else { t.on_accent };
+            t.accent = mix(t.accent, accent);
+            t.focus = mix(t.focus, accent);
+            t.selection = mix(t.selection, self.accent.rgba(0.18));
+            t.on_accent = mix(t.on_accent, on_accent);
+            t.player_progress = mix(t.player_progress, accent);
+            t.player_track = mix(t.player_track, self.accent.with(0.9, 0.03).rgba(0.22));
+        }
+        if parts.background {
+            t.player_background = mix(t.player_background, self.wash[0].with(self.wash[0].l * 0.8, self.wash[0].chroma()).rgba(t.player_background.0[3] as f32 / 255.0));
+        }
+        if parts.lyrics {
+            // The sung line nearly white with a hint of the hue, the sung word in the accent.
+            t.lyrics.current = mix(t.lyrics.current, self.accent.with(0.96, 0.025).rgba(t.lyrics.current.0[3] as f32 / 255.0));
+            t.lyrics.highlight = mix(t.lyrics.highlight, self.accent.with(self.accent.l.max(0.82), self.accent.chroma()).rgba(1.0));
+            t.lyrics.other = mix(t.lyrics.other, self.accent.with(0.9, 0.02).rgba(t.lyrics.other.0[3] as f32 / 255.0));
+        }
+        if parts.visualizer {
+            t.viz.color = mix(t.viz.color, accent);
+            t.viz.color2 = mix(t.viz.color2, self.accent.with(0.92, 0.05).rgba(t.viz.color2.0[3] as f32 / 255.0));
+        }
     }
 }
 

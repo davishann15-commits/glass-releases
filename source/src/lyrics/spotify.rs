@@ -24,7 +24,7 @@ pub fn parse(v: &Value, t: &TrackRef) -> Option<Lyrics> {
         .iter()
         .map(|x| {
             let text = x["words"].as_str().unwrap_or("").trim();
-            Line { start_ms: ms(&x["startTimeMs"]), end_ms: Some(ms(&x["endTimeMs"])).filter(|e| *e > 0), text: if text == "♪" { String::new() } else { text.to_string() }, tokens: Vec::new() }
+            Line { start_ms: ms(&x["startTimeMs"]), end_ms: Some(ms(&x["endTimeMs"])).filter(|e| *e > 0), text: if text == "♪" { String::new() } else { text.to_string() }, ..Default::default() }
         })
         .collect();
     if lines.iter().all(|l| l.text.is_empty()) {
@@ -49,7 +49,7 @@ pub fn parse(v: &Value, t: &TrackRef) -> Option<Lyrics> {
         .unwrap_or_default();
     let id = l["providerLyricsId"].as_str().filter(|s| !s.is_empty()).map(str::to_string).unwrap_or_else(|| t.key.rsplit(':').next().unwrap_or("").to_string());
     let source = Source { provider: ProviderId::Spotify, id, title: t.title.clone(), artist: t.artist().to_string(), album: t.album.clone(), duration_ms: t.duration_ms };
-    Some(Lyrics { source, language: l["language"].as_str().filter(|s| !s.is_empty()).map(str::to_string), timing, lines, translations })
+    Some(Lyrics { language: l["language"].as_str().filter(|s| !s.is_empty()).map(str::to_string), translations, ..Lyrics::new(source, timing, lines) })
 }
 
 /// Spotify's lyrics for `t`, as an outcome.
@@ -73,7 +73,7 @@ mod tests {
     use serde_json::json;
 
     fn track() -> TrackRef {
-        TrackRef { key: "spotify:track:abc".into(), title: "Mayonaka no Door".into(), artists: vec!["Miki Matsubara".into()], album: "Pocket Park".into(), duration_ms: 297_000 }
+        TrackRef { key: "spotify:track:abc".into(), title: "Mayonaka no Door".into(), artists: vec!["Miki Matsubara".into()], album: "Pocket Park".into(), duration_ms: 297_000, ..Default::default() }
     }
 
     #[test]

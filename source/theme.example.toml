@@ -61,6 +61,8 @@ colors = ["#0F1115", "#090A0B", "#E9E4DC", "#4F83A3", "#5DA9D6", "#A87C9F"]
 # animation = "glide"       # how a new line arrives: "glide", "fade", "pop" or "none"
 # speed     = 0.75          # animation speed, relative: 0.25–3 (higher is quicker)
 # bold      = true          # the current line in bold
+# word_lead = 0             # word timing: ms words light up early (negative: late), -500–500
+# word_glow = 400           # word timing: ms a sung word stays bright, 0–2000
 
 [visualizer]
 # The audio visualizer under the lyrics (V on the now-playing screen).

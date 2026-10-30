@@ -47,7 +47,8 @@ fn data() -> &'static Data {
             .enumerate()
             .map(|(i, n)| {
                 let owner = if i == 3 { json!({ "id": "spotify", "display_name": "Spotify" }) } else { json!({ "id": "me", "display_name": "Davis" }) };
-                json!({ "id": format!("p{i}"), "name": n, "type": "playlist", "uri": format!("spotify:playlist:p{i}"), "images": images(i + 40), "owner": owner, "public": i % 2 == 0, "collaborative": false, "description": if i == 0 { "Slow songs for empty roads." } else { "" }, "tracks": { "total": 15 }, "followers": { "total": 3 } })
+                // "Road Trip" has the first ten songs only (the assistant's recommendations test).
+                json!({ "id": format!("p{i}"), "name": n, "type": "playlist", "uri": format!("spotify:playlist:p{i}"), "images": images(i + 40), "owner": owner, "public": i % 2 == 0, "collaborative": false, "description": if i == 0 { "Slow songs for empty roads." } else { "" }, "tracks": { "total": if i == 7 { 10 } else { 15 } }, "followers": { "total": 3 } })
             })
             .collect();
         Data { me, artists, albums, tracks, playlists }
@@ -118,7 +119,7 @@ pub fn install(app: &mut MobileApp) {
     for p in &d.playlists {
         let id = p["id"].as_str().unwrap();
         put(&format!("/playlists/{id}"), p.clone());
-        put(&format!("ALL10000:/playlists/{id}/tracks?limit=100"), wrapped("track", &d.tracks));
+        put(&format!("ALL10000:/playlists/{id}/tracks?limit=100"), wrapped("track", if id == "p7" { &d.tracks[..10] } else { &d.tracks }));
     }
     for (i, a) in d.artists.iter().enumerate() {
         put(&format!("/artists/a{i}"), a.clone());
@@ -159,8 +160,9 @@ pub fn install(app: &mut MobileApp) {
     let playing = args.iter().position(|a| a == "-demoTrack").and_then(|i| args.get(i + 1)?.parse::<usize>().ok()).filter(|n| *n < d.tracks.len()).unwrap_or(0);
     app.pb.item = Some(Arc::new(d.tracks[playing].clone()));
     app.pb.context_uri = "spotify:playlist:p0".into();
-    app.pb.is_playing = true;
-    app.pb.progress_ms = 64_000;
+    // `-demoAt <ms>` starts elsewhere in the song, `-demoPaused` holds it there.
+    app.pb.is_playing = !args.iter().any(|a| a == "-demoPaused");
+    app.pb.progress_ms = args.iter().position(|a| a == "-demoAt").and_then(|i| args.get(i + 1)?.parse().ok()).unwrap_or(64_000);
     app.pb.progress_at = Some(std::time::Instant::now());
     app.pb.shuffle = true;
     app.queue = Some(Arc::new(json!({ "currently_playing": d.tracks[0], "queue": d.tracks[1..8].to_vec() })));
@@ -234,7 +236,8 @@ pub fn install(app: &mut MobileApp) {
 
 /// The desktop demo's sample lyrics (written for the demo, shaped like an LRCLIB
 /// record, so they go through the real parser), answered from memory. The mode comes
-/// from the launch argument `-lyrics word|line|plain|instrumental|none|ambiguous`.
+/// from the launch argument `-lyrics word|lrclib-word|cjk|line|plain|instrumental|none|ambiguous`
+/// ("word": LRCLIB's line timing, upgraded to lrc.red's sample word timing).
 fn demo_lyrics(app: &mut MobileApp, track: &Value) {
     use crate::lyrics::cache::Cache;
     use crate::lyrics::lrclib::Lookup;
@@ -245,15 +248,17 @@ fn demo_lyrics(app: &mut MobileApp, track: &Value) {
         artists: vec![track["artists"][0]["name"].as_str().unwrap_or("").into()],
         album: track["album"]["name"].as_str().unwrap_or("").into(),
         duration_ms: track["duration_ms"].as_u64().unwrap_or(0),
+        isrc: String::new(),
     };
-    let lines = ["City lights are slowly fading", "Every corner hums a tune", "We let the evening carry us", "drifting softly past the moon", "Count the windows, one by one", "till the morning finds us here"];
-    let start = |i: usize| 52_000 + i as u64 * 5_200;
+    let start = crate::lyrics::sample::start;
     let args: Vec<String> = std::env::args().collect();
     let mode = args.iter().position(|a| a == "-lyrics").and_then(|i| args.get(i + 1)).cloned().unwrap_or_else(|| "word".into());
+    // "cjk": Japanese lines, timed a character at a time by NetEase.
+    let lines = if mode == "cjk" { crate::lyrics::sample::CJK_LINES } else { crate::lyrics::sample::LINES };
     let mut file = format!("version: '1.0'\nmetadata:\n  title: \"{}\"\n  artist: \"{}\"\n  language: en\nlines:\n", t.title, t.artist());
     for (i, l) in lines.iter().enumerate() {
         file.push_str(&format!("  - text: \"{l}\"\n    start_ms: {}\n    end_ms: {}\n", start(i), start(i) + 4_600));
-        if mode == "word" {
+        if mode == "lrclib-word" {
             file.push_str("    words:\n");
             let words: Vec<&str> = l.split(' ').collect();
             for (k, w) in words.iter().enumerate() {
@@ -266,9 +271,9 @@ fn demo_lyrics(app: &mut MobileApp, track: &Value) {
     let record = |id: u64, plain: &str| {
         json!({
             "id": id, "trackName": t.title, "artistName": t.artist(), "albumName": t.album, "duration": t.duration_ms as f64 / 1000.0,
-            "instrumental": mode == "instrumental", "hasWordSync": mode == "word", "plainLyrics": if mode == "instrumental" { Value::Null } else { json!(plain) },
-            "syncedLyrics": if matches!(mode.as_str(), "word" | "line" | "ambiguous") { json!(synced) } else { Value::Null },
-            "lyricsfile": if mode == "word" { json!(file) } else { json!("") }
+            "instrumental": mode == "instrumental", "hasWordSync": mode == "lrclib-word", "plainLyrics": if mode == "instrumental" { Value::Null } else { json!(plain) },
+            "syncedLyrics": if matches!(mode.as_str(), "word" | "lrclib-word" | "line" | "ambiguous" | "cjk") { json!(synced) } else { Value::Null },
+            "lyricsfile": if mode == "lrclib-word" { json!(file) } else { json!("") }
         })
     };
     let plain = lines.join("\n");
@@ -290,7 +295,15 @@ fn demo_lyrics(app: &mut MobileApp, track: &Value) {
         ),
         _ => cache.put(&t, &Lookup::Found(parsed(record(1, &plain)), Match::Exact)),
     }
+    // "word": LRCLIB's line timing first, then lrc.red's word timing (duet, backing vocals).
+    if mode == "word" {
+        cache.put_outcome(crate::lyrics::ProviderId::LrcRed, &t, &crate::lyrics::sample::outcome(&t));
+    }
+    if mode == "cjk" {
+        cache.put_outcome(crate::lyrics::ProviderId::NetEase, &t, &crate::lyrics::sample::cjk_outcome(&t));
+    }
     app.lyrics.cache = Arc::new(cache);
+    app.lyrics.sources = crate::lyrics::service::Sources::offline(app.lyrics.cache.clone());
     app.lyrics.state.reset();
 }
 
@@ -310,7 +323,15 @@ pub fn device_songs() -> Vec<crate::share::FileMeta> {
     songs
         .iter()
         .enumerate()
-        .map(|(i, (t, a, al, s))| crate::share::FileMeta { id: format!("demo{i}"), name: format!("{t}.flac"), size: *s as u64 * 110_000, title: (*t).into(), artist: (*a).into(), album: (*al).into(), duration_ms: *s as u64 * 1000 })
+        .map(|(i, (t, a, al, s))| crate::share::FileMeta {
+            id: format!("demo{i}"),
+            name: format!("{t}.flac"),
+            size: *s as u64 * 110_000,
+            title: (*t).into(),
+            artist: (*a).into(),
+            album: (*al).into(),
+            duration_ms: *s as u64 * 1000,
+        })
         .collect()
 }
 

@@ -2,7 +2,8 @@
 //! (`[lyrics]` and `[assistant]`). Works like theme.toml: optional, watched for
 //! changes, validated, and edited in place so comments and other keys survive.
 
-use crate::lyrics::service::ProviderSetting;
+use crate::lyrics::ProviderId;
+use crate::lyrics::service::{DEFAULT_SOURCES, ProviderSetting};
 use crate::lyrics::translate::{Engine, Mode};
 use crate::theme_config::{config_dir, file_stamp, write_atomic};
 use std::path::{Path, PathBuf};
@@ -18,6 +19,8 @@ pub const OFFSET_LIMIT: i64 = 10_000;
 pub struct LyricsConfig {
     pub provider: ProviderSetting,
     pub fallback: bool,
+    /// The word timing services asked in auto, in order of preference.
+    pub sources: Vec<ProviderId>,
     pub offset_ms: i64,
     /// Sent to LRCLIB in the User-Agent, if set.
     pub contact: String,
@@ -30,7 +33,16 @@ pub struct LyricsConfig {
 
 impl Default for LyricsConfig {
     fn default() -> Self {
-        Self { provider: ProviderSetting::Auto, fallback: true, offset_ms: 0, contact: String::new(), translation: Mode::Off, translate_to: "system".into(), translator: Engine::Auto }
+        Self {
+            provider: ProviderSetting::Auto,
+            fallback: true,
+            sources: DEFAULT_SOURCES.to_vec(),
+            offset_ms: 0,
+            contact: String::new(),
+            translation: Mode::Off,
+            translate_to: "system".into(),
+            translator: Engine::Auto,
+        }
     }
 }
 
@@ -65,6 +77,7 @@ pub struct UserConfig {
 const KEYS: &[&str] = &[
     "lyrics.provider",
     "lyrics.fallback",
+    "lyrics.sources",
     "lyrics.offset_ms",
     "lyrics.contact",
     "lyrics.translation",
@@ -79,7 +92,12 @@ const KEYS: &[&str] = &[
 
 fn check(key: &str, item: &Item) -> Result<(), String> {
     match key {
-        "lyrics.provider" => item.as_str().and_then(ProviderSetting::parse).map(|_| ()).ok_or_else(|| format!("{key}: expected \"auto\", \"lrclib\" or \"spotify\"")),
+        "lyrics.provider" => item
+            .as_str()
+            .and_then(ProviderSetting::parse)
+            .map(|_| ())
+            .ok_or_else(|| format!("{key}: expected \"auto\" or one of \"lrclib\", \"spotify\", \"lrcred\", \"unison\", \"netease\", \"spicy\", \"musixmatch\"")),
+        "lyrics.sources" => sources(item).map(|_| ()).ok_or_else(|| format!("{key}: expected a list of \"lrcred\", \"qobuzify\", \"unison\", \"netease\", \"lrcmux\", \"spicy\" or \"musixmatch\"")),
         "lyrics.fallback" => item.as_bool().map(|_| ()).ok_or_else(|| format!("{key}: expected true or false")),
         "lyrics.offset_ms" => match item.as_integer() {
             Some(n) if n.abs() <= OFFSET_LIMIT => Ok(()),
@@ -108,6 +126,24 @@ fn check(key: &str, item: &Item) -> Result<(), String> {
     }
 }
 
+/// `lyrics.sources`: word timing services, each once (LRCLIB and Spotify are
+/// the line-timed chain, not sources).
+fn sources(item: &Item) -> Option<Vec<ProviderId>> {
+    let mut out = Vec::new();
+    for v in item.as_array()? {
+        let p = ProviderId::parse(v.as_str()?).filter(|p| ProviderId::WORD.contains(p))?;
+        if !out.contains(&p) {
+            out.push(p);
+        }
+    }
+    Some(out)
+}
+
+/// `lyrics.sources` as config.toml writes it.
+pub fn sources_value(list: &[ProviderId]) -> Value {
+    Value::Array(list.iter().map(|p| p.key()).collect())
+}
+
 /// Reads the file. Every bad value is reported; unknown keys are warnings.
 pub fn parse(text: &str) -> Result<(UserConfig, Vec<String>), String> {
     let doc: DocumentMut = text.parse().map_err(|e: toml_edit::TomlError| format!("config.toml isn't valid TOML: {}", e.to_string().trim()))?;
@@ -132,6 +168,7 @@ pub fn parse(text: &str) -> Result<(UserConfig, Vec<String>), String> {
             match key.as_str() {
                 "lyrics.provider" => c.lyrics.provider = v.as_str().and_then(ProviderSetting::parse).unwrap_or(ProviderSetting::Auto),
                 "lyrics.fallback" => c.lyrics.fallback = v.as_bool().unwrap_or(true),
+                "lyrics.sources" => c.lyrics.sources = sources(v).unwrap_or_default(),
                 "lyrics.offset_ms" => c.lyrics.offset_ms = v.as_integer().unwrap_or(0),
                 "lyrics.contact" => c.lyrics.contact = v.as_str().unwrap_or("").trim().to_string(),
                 "lyrics.translation" => c.lyrics.translation = v.as_str().and_then(Mode::parse).unwrap_or_default(),
@@ -296,13 +333,14 @@ mod tests {
     #[test]
     fn values_are_read() {
         let (c, _) =
-            parse("[lyrics]\nprovider = \"LRCLIB\"\nfallback = false\noffset_ms = -250\ncontact = \" me@example.com \"\ntranslation = \"below\"\ntranslate_to = \"ja\"\ntranslator = \"assistant\"\n")
+            parse("[lyrics]\nprovider = \"LRCLIB\"\nfallback = false\nsources = [\"netease\", \"lrcred\", \"netease\"]\noffset_ms = -250\ncontact = \" me@example.com \"\ntranslation = \"below\"\ntranslate_to = \"ja\"\ntranslator = \"assistant\"\n")
                 .unwrap();
         assert_eq!(
             c.lyrics,
             LyricsConfig {
-                provider: ProviderSetting::Lrclib,
+                provider: ProviderSetting::Only(ProviderId::Lrclib),
                 fallback: false,
+                sources: vec![ProviderId::NetEase, ProviderId::LrcRed],
                 offset_ms: -250,
                 contact: "me@example.com".into(),
                 translation: crate::lyrics::translate::Mode::Below,
@@ -311,6 +349,9 @@ mod tests {
             }
         );
         assert!(parse("[lyrics]\ntranslation = \"sideways\"\ntranslate_to = \"klingon!\"\n").is_err());
+        assert!(parse("[lyrics]\nsources = [\"lrclib\"]\n").is_err(), "LRCLIB is the line chain, not a word source");
+        assert!(parse("[lyrics]\nsources = \"lrcred\"\n").is_err());
+        assert_eq!(parse("[lyrics]\nsources = []\n").unwrap().0.lyrics.sources, vec![], "no word services at all");
     }
 
     #[test]
@@ -330,10 +371,10 @@ mod tests {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(&path, "[lyrics]\nprovider = \"lrclib\"\n").unwrap();
         s.reload();
-        assert_eq!(s.lyrics().provider, ProviderSetting::Lrclib);
+        assert_eq!(s.lyrics().provider, ProviderSetting::Only(ProviderId::Lrclib));
         std::fs::write(&path, "[lyrics]\nprovider = \"nope\"\n").unwrap();
         s.reload();
-        assert_eq!(s.lyrics().provider, ProviderSetting::Lrclib, "last good value stays");
+        assert_eq!(s.lyrics().provider, ProviderSetting::Only(ProviderId::Lrclib), "last good value stays");
         assert!(s.error().unwrap().contains("lyrics.provider"));
         // An in-app change refuses to overwrite the broken file.
         std::fs::write(&path, "[lyrics\n").unwrap();
@@ -351,7 +392,10 @@ mod tests {
         s.set("lyrics.offset_ms", 300.into()).unwrap();
         let text = std::fs::read_to_string(&path).unwrap();
         assert!(text.contains("# mine") && text.contains("provider = \"spotify\" # keep this note") && text.contains("future_key = 1") && text.contains("x = \"y\""), "{text}");
-        assert_eq!((s.lyrics().provider, s.lyrics().offset_ms), (ProviderSetting::Spotify, 300));
+        assert_eq!((s.lyrics().provider, s.lyrics().offset_ms), (ProviderSetting::Only(ProviderId::Spotify), 300));
+        s.set("lyrics.sources", sources_value(&[ProviderId::Unison])).unwrap();
+        assert_eq!(s.lyrics().sources, vec![ProviderId::Unison]);
+        assert!(std::fs::read_to_string(&path).unwrap().contains("sources = [\"unison\"]"));
         assert!(s.set("lyrics.offset_ms", 50_000.into()).is_err(), "out of range");
         assert!(s.set("lyrics.provider", "genius".into()).is_err());
         assert_eq!(s.lyrics().offset_ms, 300);

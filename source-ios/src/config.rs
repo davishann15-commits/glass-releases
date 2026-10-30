@@ -306,6 +306,10 @@ pub struct Settings {
     pub track_notifications: bool,
     /// Now Playing and the player bar take their colors from the album cover.
     pub album_colors: bool,
+    /// Album colors on every page, not only Now Playing and the player bar.
+    pub album_everywhere: bool,
+    /// Which parts take the album's colors (the rest keep the theme's).
+    pub album_parts: crate::palette::AlbumParts,
     /// The audio visualizer under the lyrics on the now-playing screen (V).
     pub visualizer: bool,
     /// The DJ (X) talks between songs.
@@ -372,6 +376,8 @@ impl Default for Settings {
             auto_update: true,
             track_notifications: false,
             album_colors: true,
+            album_everywhere: false,
+            album_parts: Default::default(),
             autostart: Autostart::Off,
             close_minimizes: false,
             window_size: None,

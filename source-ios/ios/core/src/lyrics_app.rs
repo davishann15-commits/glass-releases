@@ -7,11 +7,10 @@
 use crate::app::{Action, MobileApp, Msg};
 use crate::bridge::CoreEvent;
 use crate::lyrics::cache::Cache as LyricsCache;
-use crate::lyrics::lrclib::Client as LrclibClient;
-use crate::lyrics::service::{self as lyrics_service, LyricsState, Request as LyricsRequest, Resolved, Status};
+use crate::lyrics::service::{self as lyrics_service, LyricsState, ProviderSetting, Request as LyricsRequest, Resolved, Sources, Status};
 use crate::lyrics::translate::{self, Engine, Fix, Mode, Translation};
-use crate::lyrics::{Candidate, Lyrics, Match, Outcome, ProviderId, Timing, TrackRef};
-use crate::model::{self, s};
+use crate::lyrics::{Candidate, Lyrics, Match, Outcome, ProviderId, Timing, TrackRef, Voice};
+use crate::model;
 use std::sync::Arc;
 
 /// The lyrics side of the core's state.
@@ -19,7 +18,8 @@ pub struct LyricsCore {
     pub state: LyricsState,
     pub cache: Arc<LyricsCache>,
     pub choices: crate::lyrics::choices::Choices,
-    pub client: Arc<LrclibClient>,
+    /// Every lyrics service's client and the user's keys.
+    pub sources: Arc<Sources>,
     client_for: (String, String),
     pub nonce: u64,
     pub picker: Option<Picker>,
@@ -49,17 +49,19 @@ pub struct TranslationState {
 
 impl LyricsCore {
     pub fn new(contact: &str, proxy: &str, log: crate::api::NetLog, demo: bool) -> Self {
-        let (cache, client) = if demo {
-            // The demo never contacts LRCLIB: answers come from memory, the client points nowhere.
-            (Arc::new(LyricsCache::in_memory()), LrclibClient::with_base("http://127.0.0.1:9", "", "", None))
+        let (cache, sources) = if demo {
+            // The demo never contacts a lyrics service: answers come from memory, the clients point nowhere.
+            let cache = Arc::new(LyricsCache::in_memory());
+            (cache.clone(), Sources::offline(cache))
         } else {
-            (Arc::new(LyricsCache::new(LyricsCache::dir())), LrclibClient::new(contact, proxy, Some(log)))
+            let cache = Arc::new(LyricsCache::new(LyricsCache::dir()));
+            (cache.clone(), Sources::new(contact, proxy, Some(log), cache, Some(crate::platform::secrets())))
         };
         Self {
             state: LyricsState::default(),
             cache,
             choices: crate::lyrics::choices::Choices::load(crate::lyrics::choices::Choices::path()),
-            client,
+            sources,
             client_for: (contact.to_string(), proxy.to_string()),
             nonce: 0,
             picker: None,
@@ -93,19 +95,16 @@ impl MobileApp {
     pub fn lyrics_track(&self) -> Option<TrackRef> {
         if self.local_file_active() {
             let t = self.local.as_ref()?.current()?;
-            return Some(TrackRef { key: format!("local:{}", t.path.display()), title: t.title.clone(), artists: vec![t.artist.clone()], album: t.album.clone(), duration_ms: t.duration_ms });
+            return Some(TrackRef {
+                key: format!("local:{}", t.path.display()),
+                title: t.title.clone(),
+                artists: vec![t.artist.clone()],
+                album: t.album.clone(),
+                duration_ms: t.duration_ms,
+                isrc: String::new(),
+            });
         }
-        let it = self.pb.item.as_ref()?;
-        if s(it, "type") != "track" || s(it, "uri").is_empty() {
-            return None;
-        }
-        Some(TrackRef {
-            key: s(it, "uri").to_string(),
-            title: s(it, "name").to_string(),
-            artists: model::arr(it, "artists").iter().map(|a| s(a, "name").to_string()).filter(|a| !a.is_empty()).collect(),
-            album: s(&it["album"], "name").to_string(),
-            duration_ms: model::u(it, "duration_ms"),
-        })
+        crate::lyrics::track_ref(self.pb.item.as_deref()?)
     }
 
     fn lyrics_key(&self) -> Option<String> {
@@ -114,7 +113,7 @@ impl MobileApp {
             return Some(format!("local:{}", t.path.display()));
         }
         let it = self.pb.item.as_ref()?;
-        (s(it, "type") == "track" && !s(it, "uri").is_empty()).then(|| s(it, "uri").to_string())
+        (model::s(it, "type") == "track" && !model::s(it, "uri").is_empty()).then(|| model::s(it, "uri").to_string())
     }
 
     pub fn lyrics_song_offset(&mut self) -> i64 {
@@ -131,7 +130,7 @@ impl MobileApp {
 
     fn lyrics_request(&self, track: TrackRef) -> LyricsRequest {
         let c = self.config.lyrics();
-        LyricsRequest { track, setting: c.provider, fallback: c.fallback, nonce: self.lyrics.nonce }
+        LyricsRequest { track, setting: c.provider, fallback: c.fallback, sources: c.sources.clone(), nonce: self.lyrics.nonce }
     }
 
     /// Desktop `sync_lyrics`, each tick: drop a stale lookup when the song changes,
@@ -148,6 +147,7 @@ impl MobileApp {
         let c = self.config.lyrics();
         if let Some(r) = &self.lyrics.state.request
             && (r.setting, r.fallback, r.nonce) == (c.provider, c.fallback, self.lyrics.nonce)
+            && r.sources == c.sources
         {
             return;
         }
@@ -165,34 +165,11 @@ impl MobileApp {
             return;
         }
         let generation = self.lyrics.state.begin(req.clone());
-        let plan = lyrics_service::plan(req.setting, req.fallback);
         let spotify: Option<Arc<dyn crate::ai::spotify::Source>> = self.api.clone().map(|a| Arc::new(a) as Arc<dyn crate::ai::spotify::Source>);
-        let spotify_ok = if !req.track.key.starts_with("spotify:track:") {
-            Err(crate::lyrics::spotify::NOT_SPOTIFY)
-        } else if spotify.is_none() {
-            Err(crate::lyrics::spotify::NOT_CONNECTED)
-        } else {
-            Ok(())
-        };
-        let (client, cache, tx) = (self.lyrics.client.clone(), self.lyrics.cache.clone(), self.tx.clone());
-        let task = self.rt.spawn(async move {
-            let t = req.track;
-            let resolved = lyrics_service::resolve(
-                &plan,
-                |p| lyrics_service::availability(p, spotify_ok),
-                |p| {
-                    let (client, cache, t, spotify) = (client.clone(), cache.clone(), t.clone(), spotify.clone());
-                    async move {
-                        match p {
-                            ProviderId::Spotify => crate::lyrics::spotify::fetch(spotify, &t).await,
-                            _ => lyrics_service::fetch(p, &client, &cache, &t).await,
-                        }
-                    }
-                },
-            )
-            .await;
+        let (sources, tx) = (self.lyrics.sources.clone(), self.tx.clone());
+        let task = self.rt.spawn(lyrics_service::run(sources, req.setting, req.fallback, req.sources, req.track, None, spotify, move |resolved| {
             tx.send(Msg::Lyrics { generation, resolved });
-        });
+        }));
         self.lyrics.state.running(task.abort_handle());
     }
 
@@ -202,7 +179,7 @@ impl MobileApp {
         }
         let want = (self.config.lyrics().contact.clone(), self.settings.proxy.clone());
         if want != self.lyrics.client_for {
-            self.lyrics.client = LrclibClient::new(&want.0, &want.1, Some(self.log.clone()));
+            self.lyrics.sources = Sources::new(&want.0, &want.1, Some(self.log.clone()), self.lyrics.cache.clone(), Some(crate::platform::secrets()));
             self.lyrics.client_for = want;
         }
     }
@@ -219,7 +196,7 @@ impl MobileApp {
         self.lyrics.search_seq += 1;
         let generation = self.lyrics.search_seq;
         self.lyrics.picker = Some(Picker { query: q.clone(), results: None, generation });
-        let (client, tx) = (self.lyrics.client.clone(), self.tx.clone());
+        let (client, tx) = (self.lyrics.sources.lrclib.clone(), self.tx.clone());
         self.rt.spawn(async move {
             let result = client.search_text(&q).await.map_err(|e| e.to_string()).map(|mut found| {
                 found.sort_by(|a, b| {
@@ -284,6 +261,31 @@ impl MobileApp {
             }
             LyricsAction::ClosePicker => self.lyrics.picker = None,
             LyricsAction::Provider(p) => self.set_config("lyrics.provider", p.into()),
+            LyricsAction::Sources(list) => {
+                let list: Vec<ProviderId> = list.iter().filter_map(|s| ProviderId::parse(s)).filter(|p| ProviderId::WORD.contains(p)).collect();
+                self.set_config("lyrics.sources", crate::user_config::sources_value(&list));
+            }
+            LyricsAction::Key { provider, key } => {
+                let Some(p) = ProviderId::parse(&provider).filter(|p| p.needs_key()) else { return };
+                let key = key.map(|k| k.trim().to_string()).filter(|k| !k.is_empty());
+                match self.lyrics.sources.set_key(p, key.as_deref()) {
+                    Ok(()) => {
+                        // A key added puts its service first in line; a key removed takes it out.
+                        let mut list = self.config.lyrics().sources.clone();
+                        list.retain(|&x| x != p);
+                        if key.is_some() {
+                            list.insert(0, p);
+                        }
+                        self.set_config("lyrics.sources", crate::user_config::sources_value(&list));
+                        self.toast(if key.is_some() { format!("Saved your {} key", p.label()) } else { format!("Removed your {} key", p.label()) });
+                        self.lyrics.nonce += 1;
+                    }
+                    Err(e) => {
+                        log::warn!("lyrics key: {e}");
+                        self.toast("Couldn't keep the key. Try again.");
+                    }
+                }
+            }
             LyricsAction::Fallback(on) => self.set_config("lyrics.fallback", on.into()),
             LyricsAction::Offset(ms) => {
                 let ms = ms.clamp(-crate::user_config::OFFSET_LIMIT, crate::user_config::OFFSET_LIMIT);
@@ -380,14 +382,14 @@ impl MobileApp {
             return;
         }
         // Already in that language?
-        let hint = lyrics.language.clone().or_else(|| translate::script_language(&lines).map(str::to_string));
+        let hint = translate::source_language(lyrics.language.as_deref(), &lines);
         if let Some(h) = &hint
             && same_language(h, &target)
         {
             self.lyrics.translation.result = Some(Arc::new(Translation::Same { lang: h.clone() }));
             return;
         }
-        if let Some(t) = self.lyrics.translation_store.get(stored(&k)) {
+        if let Some(t) = self.lyrics.translation_store.get(stored(&k)).filter(|t| !t.contradicted_by(&lines)) {
             self.lyrics.translation.result = Some(Arc::new(t));
             return;
         }
@@ -438,7 +440,7 @@ impl MobileApp {
                 let r = match bearer().await {
                     Ok(token) => match client.stream(&token, &body, |_| {}).await {
                         Ok(done) if done.truncated => Translation::Failed("the translation was too long to finish".into()),
-                        Ok(done) => translate::parse_assistant(&done.text, lines.len(), &target),
+                        Ok(done) => translate::parse_assistant(&done.text, &lines, &target),
                         Err(e) => Translation::Failed(e.message(kind)),
                     },
                     Err(e) => Translation::Failed(e.to_string()),
@@ -502,6 +504,8 @@ impl MobileApp {
             },
             translation: None,
             provider_setting: cfg.provider.name().to_string(),
+            credits: Vec::new(),
+            pending: false,
         };
         if track.is_none() {
             return m;
@@ -514,7 +518,10 @@ impl MobileApp {
         });
         let res = match &self.lyrics.state.status {
             Status::Idle | Status::Loading => {
-                let provider = if cfg.provider.name() == "spotify" { "Spotify" } else { "LRCLIB" };
+                let provider = match cfg.provider {
+                    ProviderSetting::Only(p) => p.label(),
+                    ProviderSetting::Auto => "LRCLIB",
+                };
                 m.state = LyricsPhase::Loading { provider: provider.into() };
                 return m;
             }
@@ -529,18 +536,20 @@ impl MobileApp {
                     Timing::Word => LyricsTiming::Word,
                     Timing::Syllable => LyricsTiming::Syllable,
                 };
-                m.lines = lyrics
-                    .lines
-                    .iter()
-                    .map(|l| LyricLine { start_ms: l.start_ms, end_ms: l.end_ms, text: l.text.clone(), tokens: l.tokens.iter().map(|t| LyricToken { text: t.text.clone(), start_ms: t.start_ms, end_ms: t.end_ms }).collect() })
-                    .collect();
-                // Footer: "{provider} · {exact match|matched by search|your pick}[ · {first} had none][ · {lang}]".
-                let mut prov = vec![lyrics.source.provider.name().to_string(), match how {
-                    Match::Exact => "exact match",
-                    Match::Search => "matched by search",
-                    Match::Manual => "your pick",
-                }
-                .to_string()];
+                m.lines = lines_model(lyrics);
+                m.pending = res.pending && lyrics.word_coverage() < 0.8;
+                // Where the lyrics are from, before the header (desktop `credits`).
+                m.credits = lyrics.named_by().iter().map(|c| CreditModel { text: c.text.clone(), url: c.url.clone() }).collect();
+                // Footer: "{exact match|matched by search|your pick}[ · {first} had none][ · {lang}]".
+                let mut prov = Vec::new();
+                prov.push(
+                    match how {
+                        Match::Exact => "exact match",
+                        Match::Search => "matched by search",
+                        Match::Manual => "your pick",
+                    }
+                    .to_string(),
+                );
                 if res.fell_back()
                     && let Some((first, _)) = res.tried.first()
                 {
@@ -647,12 +656,21 @@ fn candidate_model(c: &Candidate, track_ms: u64) -> CandidateModel {
 pub enum LyricsAction {
     Visible(bool),
     Retry,
-    Pick { index: usize },
+    Pick {
+        index: usize,
+    },
     NoneFit,
     OpenPicker,
     Search(String),
     ClosePicker,
     Provider(String),
+    /// The word timing services asked, in order (`lyrics.sources`).
+    Sources(Vec<String>),
+    /// Keeps (or with `None`, removes) the user's key for "spicy" or "musixmatch".
+    Key {
+        provider: String,
+        key: Option<String>,
+    },
     Fallback(bool),
     Offset(i64),
     SongOffset(i64),
@@ -684,17 +702,76 @@ pub struct LyricToken {
     /// Carries its own trailing space.
     pub text: String,
     pub start_ms: u64,
-    pub end_ms: Option<u64>,
+    /// When it's sung through (worked out here, so the view only divides).
+    pub end_ms: u64,
+}
+
+#[derive(uniffi::Enum, Clone, Copy, PartialEq, Eq, Debug)]
+pub enum LyricVoice {
+    Lead,
+    /// A duet's other singer: drawn on the other side.
+    Other,
+    Group,
+}
+
+#[derive(uniffi::Record, Clone, PartialEq, Debug)]
+pub struct LyricBacking {
+    pub text: String,
+    pub tokens: Vec<LyricToken>,
 }
 
 #[derive(uniffi::Record, Clone, PartialEq, Debug)]
 pub struct LyricLine {
     pub start_ms: u64,
     pub end_ms: Option<u64>,
+    /// The line is lit from `start_ms` until this (shared `Lyrics::line_end`):
+    /// lines of different voices can be lit at once.
+    pub active_end_ms: u64,
     /// Empty: an instrumental gap (drawn as ♪) or a stanza break in plain lyrics.
     pub text: String,
     /// Word or syllable timing when the provider has it; empty for whole-line timing.
     pub tokens: Vec<LyricToken>,
+    pub voice: LyricVoice,
+    pub backing: Option<LyricBacking>,
+    /// Right-to-left text.
+    pub rtl: bool,
+}
+
+#[derive(uniffi::Record, Clone, PartialEq, Debug)]
+pub struct CreditModel {
+    pub text: String,
+    /// Where the credit links (lrc.red asks for a link back).
+    pub url: Option<String>,
+}
+
+/// The lyrics as the view draws them: every end worked out by the shared
+/// timing rules, so the view's per-frame work is a comparison and a division.
+pub fn lines_model(lyrics: &Lyrics) -> Vec<LyricLine> {
+    let tokens = |t: &[crate::lyrics::Token], end: u64| -> Vec<LyricToken> {
+        (0..t.len()).map(|k| LyricToken { text: t[k].text.clone(), start_ms: t[k].start_ms, end_ms: crate::lyrics::token_end(t, k, end) }).collect()
+    };
+    lyrics
+        .lines
+        .iter()
+        .enumerate()
+        .map(|(i, l)| {
+            let end = lyrics.line_end(i);
+            LyricLine {
+                start_ms: l.start_ms,
+                end_ms: l.end_ms,
+                active_end_ms: end,
+                text: l.text.clone(),
+                tokens: tokens(&l.tokens, end),
+                voice: match l.voice {
+                    Voice::Lead => LyricVoice::Lead,
+                    Voice::Other => LyricVoice::Other,
+                    Voice::Group => LyricVoice::Group,
+                },
+                backing: l.backing.as_ref().map(|b| LyricBacking { text: b.text.clone(), tokens: tokens(&b.tokens, end) }),
+                rtl: crate::lyrics::is_rtl(&l.text),
+            }
+        })
+        .collect()
 }
 
 #[derive(uniffi::Enum, Clone, PartialEq, Debug)]
@@ -764,7 +841,7 @@ pub struct LyricsModel {
     pub header: String,
     pub timing: LyricsTiming,
     pub lines: Vec<LyricLine>,
-    /// "lrclib · exact match · en"
+    /// "exact match · English" (the source is in `credits`)
     pub provenance: String,
     /// The record it came from, and the rights note.
     pub detail: String,
@@ -777,8 +854,12 @@ pub struct LyricsModel {
     pub song_offset_ms: i64,
     pub translation_mode: TranslationMode,
     pub translation: Option<TranslationModel>,
-    /// "auto", "lrclib" or "spotify".
+    /// "auto", "lrclib", "spotify" or a word timing service ("lrcred"…).
     pub provider_setting: String,
+    /// Where the lyrics are from (before the header), linked where the service asks for credit.
+    pub credits: Vec<CreditModel>,
+    /// Line-timed lyrics are showing while the word timing services are still looking.
+    pub pending: bool,
 }
 
 /// Why lyrics couldn't load, in plain words (the details go to the log).
@@ -787,9 +868,5 @@ fn plain_lyrics_error(e: &str) -> String {
         return e.to_string();
     }
     log::warn!("lyrics: {e}");
-    if e.starts_with("couldn't reach") || crate::errors::offline(&e.to_lowercase()) {
-        "Lyrics need a connection.".into()
-    } else {
-        "The lyrics service isn't answering. Try again later.".into()
-    }
+    if e.starts_with("couldn't reach") || crate::errors::offline(&e.to_lowercase()) { "Lyrics need a connection.".into() } else { "The lyrics service isn't answering. Try again later.".into() }
 }

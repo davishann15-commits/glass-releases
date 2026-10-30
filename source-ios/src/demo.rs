@@ -5,8 +5,9 @@
 //! `GLASS_SCREENSHOT=/path.png` saves a screenshot of the window after it
 //! settles, then quits. `GLASS_ROUTE=library|nowplaying|home|playlist|artist|search|settings|activity|liked|local|device`
 //! picks the page; `GLASS_RIGHT=queue|devices|lyrics|assistant` opens a side panel and
-//! `GLASS_THEME_PANEL=1` the theme panel. `GLASS_LYRICS=word|line|plain|instrumental|none|ambiguous`
-//! picks what the (offline) lyrics lookup finds.
+//! `GLASS_THEME_PANEL=1` the theme panel. `GLASS_LYRICS=word|lrclib-word|cjk|line|plain|instrumental|none|ambiguous`
+//! picks what the (offline) lyrics lookup finds; `GLASS_DEMO_AT=<ms>` and
+//! `GLASS_DEMO_PAUSED=1` set where the song is.
 
 use crate::app::{App, AuthState, Load, Route};
 use eframe::egui;
@@ -152,8 +153,9 @@ pub fn install(app: &mut App) {
     app.me = Some(me);
     app.pb.item = Some(Arc::new(tracks[0].clone()));
     app.pb.context_uri = "spotify:playlist:p0".into();
-    app.pb.is_playing = true;
-    app.pb.progress_ms = 64_000;
+    // `GLASS_DEMO_AT=<ms>` starts elsewhere in the song, `GLASS_DEMO_PAUSED=1` holds it there.
+    app.pb.is_playing = std::env::var_os("GLASS_DEMO_PAUSED").is_none();
+    app.pb.progress_ms = std::env::var("GLASS_DEMO_AT").ok().and_then(|v| v.parse().ok()).unwrap_or(64_000);
     app.pb.progress_at = Some(std::time::Instant::now());
     app.pb.shuffle = true;
     app.queue = Some(Arc::new(json!({ "currently_playing": tracks[0], "queue": tracks[1..8].to_vec() })));
@@ -237,6 +239,7 @@ pub fn install(app: &mut App) {
             demo_assistant(app);
             app.ai.transcript.clear();
             app.ai.drafts.clear();
+            app.ai.picks.clear();
             app.ai.approvals.clear();
             app.ai.usage = Default::default();
         }
@@ -281,7 +284,7 @@ fn demo_assistant(app: &mut App) {
     // As if the assistant had found them on Spotify.
     let ids: Vec<String> = (0..songs.len()).map(|i| format!("spotify:track:demo{i}")).collect();
     for (id, (t, a, _, secs)) in ids.iter().zip(songs.iter()) {
-        app.ai.catalog.add(crate::ai::spotify::Item { uri: id.clone(), name: (*t).into(), by: (*a).into(), album: String::new(), duration_ms: *secs * 1000 });
+        app.ai.catalog.add(crate::ai::spotify::Item { uri: id.clone(), name: (*t).into(), by: (*a).into(), album: String::new(), duration_ms: *secs * 1000, preview: None });
     }
     app.local_tracks = Some(std::sync::Arc::new(tracks));
     app.set_config("assistant.enabled", true.into());
@@ -300,7 +303,23 @@ fn demo_assistant(app: &mut App) {
         crate::ai::Line::Assistant(
             "Here's a 57-minute preview, opening with “Plastic Love” and ending on “Midnight Pretenders”. Save it to Spotify if it looks right, or tell me what to change.".into(),
         ),
+        crate::ai::Line::User("recommend some songs for my Late Night Drive playlist".into()),
+        crate::ai::Line::Assistant("Here are five for “Late Night Drive”, none of them already in it. ▶ plays 30 seconds of each; + adds the ones you like.".into()),
     ];
+    // As if `recommend_songs` had shown them (one already added from the card).
+    let pick = |i: usize, why: &str, added: bool| crate::ai::tools::Pick { uri: format!("spotify:track:demo{i}"), why: why.into(), added_to: if added { vec!["p0".into()] } else { Vec::new() } };
+    app.ai.picks = vec![crate::ai::tools::Picks {
+        id: "r1".into(),
+        title: "For Late Night Drive".into(),
+        songs: vec![
+            pick(6, "the same slow-burning groove as the playlist's opener", true),
+            pick(5, "Taeko Ohnuki's late-70s sound, already one of your most played", false),
+            pick(9, "brighter, but the same bass-led city pop", false),
+            pick(10, "a smooth closer with a long fade", false),
+            pick(11, "synths and a night-time feel", false),
+        ],
+        for_playlist: Some("p0".into()),
+    }];
     app.ai.drafts =
         vec![Draft { id: "d1".into(), name: "Night Drive — City Pop".into(), description: String::new(), tracks: ids, replaces: None, dest: Dest::Spotify, status: DraftStatus::AwaitingApproval }];
     app.ai.approvals = vec![Approval { id: "a1".into(), kind: ApprovalKind::SaveDraft { draft_id: "d1".into(), replace: None } }];
@@ -396,21 +415,16 @@ fn demo_lyrics(app: &mut App, track: &Value) {
         artists: vec![track["artists"][0]["name"].as_str().unwrap_or("").into()],
         album: track["album"]["name"].as_str().unwrap_or("").into(),
         duration_ms: track["duration_ms"].as_u64().unwrap_or(0),
+        isrc: String::new(),
     };
-    let lines = [
-        "City lights are slowly fading",
-        "Every corner hums a tune",
-        "We let the evening carry us",
-        "drifting softly past the moon",
-        "Count the windows, one by one",
-        "till the morning finds us here",
-    ];
-    let start = |i: usize| 52_000 + i as u64 * 5_200;
+    let start = crate::lyrics::sample::start;
     let mode = std::env::var("GLASS_LYRICS").unwrap_or_else(|_| "word".into());
+    // "cjk": Japanese lines, timed a character at a time by NetEase.
+    let lines = if mode == "cjk" { crate::lyrics::sample::CJK_LINES } else { crate::lyrics::sample::LINES };
     let mut file = format!("version: '1.0'\nmetadata:\n  title: \"{}\"\n  artist: \"{}\"\n  language: en\nlines:\n", t.title, t.artist());
     for (i, l) in lines.iter().enumerate() {
         file.push_str(&format!("  - text: \"{l}\"\n    start_ms: {}\n    end_ms: {}\n", start(i), start(i) + 4_600));
-        if mode == "word" {
+        if mode == "lrclib-word" {
             file.push_str("    words:\n");
             let words: Vec<&str> = l.split(' ').collect();
             for (k, w) in words.iter().enumerate() {
@@ -423,9 +437,9 @@ fn demo_lyrics(app: &mut App, track: &Value) {
     let record = |id: u64, plain: &str| {
         json!({
             "id": id, "trackName": t.title, "artistName": t.artist(), "albumName": t.album, "duration": t.duration_ms as f64 / 1000.0,
-            "instrumental": mode == "instrumental", "hasWordSync": mode == "word", "plainLyrics": if mode == "instrumental" { Value::Null } else { json!(plain) },
-            "syncedLyrics": if matches!(mode.as_str(), "word" | "line" | "ambiguous") { json!(synced) } else { Value::Null },
-            "lyricsfile": if mode == "word" { json!(file) } else { json!("") }
+            "instrumental": mode == "instrumental", "hasWordSync": mode == "lrclib-word", "plainLyrics": if mode == "instrumental" { Value::Null } else { json!(plain) },
+            "syncedLyrics": if matches!(mode.as_str(), "word" | "lrclib-word" | "line" | "ambiguous" | "cjk") { json!(synced) } else { Value::Null },
+            "lyricsfile": if mode == "lrclib-word" { json!(file) } else { json!("") }
         })
     };
     let plain = lines.join("\n");
@@ -446,6 +460,13 @@ fn demo_lyrics(app: &mut App, track: &Value) {
             ]),
         ),
         _ => cache.put(&t, &Lookup::Found(parsed(record(1, &plain)), Match::Exact)),
+    }
+    // "word": LRCLIB's line timing first, then lrc.red's word timing (duet, backing vocals).
+    if mode == "word" {
+        cache.put_outcome(crate::lyrics::ProviderId::LrcRed, &t, &crate::lyrics::sample::outcome(&t));
+    }
+    if mode == "cjk" {
+        cache.put_outcome(crate::lyrics::ProviderId::NetEase, &t, &crate::lyrics::sample::cjk_outcome(&t));
     }
     app.offline_lyrics(cache);
 }

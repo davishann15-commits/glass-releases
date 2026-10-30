@@ -50,6 +50,10 @@ pub fn show(app: &mut App, ui: &mut Ui) {
     let left = Rect::from_min_size(bar.min + vec2(pad, 0.0), vec2(w * 0.3 - pad, bar.height()));
     ui.scope_builder(UiBuilder::new().max_rect(left).layout(Layout::left_to_right(Align::Center)), |ui| {
         let cover = px(64.0);
+        // With album colors on every page, a new song's colors bloom from this cover.
+        if app.settings.album_colors && app.settings.album_everywhere {
+            app.album_colors.set_origin(ui.ctx().content_rect(), left.left_center() + vec2(cover / 2.0, 0.0));
+        }
         if let Some(t) = &local {
             widgets::cover(ui, t.cover_uri().as_deref(), cover, false);
             ui.add_space(sp(1.0));
@@ -172,10 +176,14 @@ pub fn show(app: &mut App, ui: &mut Ui) {
         let at = (((p.x - seek.left()) / seek.width()).clamp(0.0, 1.0) * dur as f32) as u64;
         resp.clone().on_hover_text_at_pointer(model::fmt_ms(at));
     }
-    if let Some(f) = new
-        && (resp.drag_stopped() || resp.clicked())
-    {
-        app.act(Action::Seek((f * dur as f32) as u64));
+    if let Some(f) = new {
+        if resp.drag_stopped() || resp.clicked() {
+            app.scrub_ms = None;
+            app.act(Action::Seek((f * dur as f32) as u64));
+        } else if resp.dragged() {
+            // The lyrics follow the bar while it's held.
+            app.scrub_ms = Some(((f * dur as f32) as u64, std::time::Instant::now()));
+        }
     }
 
     // ---------------- right: volume, panels, hints

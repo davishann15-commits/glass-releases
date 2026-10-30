@@ -85,10 +85,21 @@ pub struct PendingPlay {
 /// that are about its windows (those are Swift's own business on iOS).
 #[derive(Clone, Debug)]
 pub enum Action {
-    PlayContext { context: String, track: Option<String> },
-    PlayUris { uris: Vec<String>, index: usize },
-    PlayLocal { index: usize },
-    PlayLocalPaths { paths: Vec<String>, start: usize },
+    PlayContext {
+        context: String,
+        track: Option<String>,
+    },
+    PlayUris {
+        uris: Vec<String>,
+        index: usize,
+    },
+    PlayLocal {
+        index: usize,
+    },
+    PlayLocalPaths {
+        paths: Vec<String>,
+        start: usize,
+    },
     Radio(String),
     TogglePlay,
     /// From the system's media controls: play only if paused, pause only if
@@ -108,60 +119,139 @@ pub enum Action {
     QueueCollection(String),
     ClearQueue,
     Transfer(String),
-    Save { uris: Vec<String>, save: bool },
-    AddToPlaylist { playlist: String, uris: Vec<String> },
-    RemoveFromPlaylist { playlist: String, uris: Vec<String> },
-    MovePlaylistItem { playlist: String, from: usize, to: usize },
-    CreatePlaylist { name: String, uris: Vec<String> },
-    UpdatePlaylist { id: String, name: String, description: String, public: bool, collaborative: bool },
+    Save {
+        uris: Vec<String>,
+        save: bool,
+    },
+    AddToPlaylist {
+        playlist: String,
+        uris: Vec<String>,
+    },
+    RemoveFromPlaylist {
+        playlist: String,
+        uris: Vec<String>,
+    },
+    MovePlaylistItem {
+        playlist: String,
+        from: usize,
+        to: usize,
+    },
+    CreatePlaylist {
+        name: String,
+        uris: Vec<String>,
+    },
+    UpdatePlaylist {
+        id: String,
+        name: String,
+        description: String,
+        public: bool,
+        collaborative: bool,
+    },
     DeletePlaylist(String),
     Pin(String),
     Unpin(String),
-    CreateFolder { name: String, add: Option<String> },
-    RenameFolder { id: String, name: String },
+    CreateFolder {
+        name: String,
+        add: Option<String>,
+    },
+    RenameFolder {
+        id: String,
+        name: String,
+    },
     DeleteFolder(String),
-    MoveToFolder { playlist: String, folder: Option<String> },
+    MoveToFolder {
+        playlist: String,
+        folder: Option<String>,
+    },
     Invalidate(String),
     RestartEngine,
     RescanLocal,
-    Download { uri: String, name: String },
+    Download {
+        uri: String,
+        name: String,
+    },
     RemoveDownload(String),
     RemoveAllDownloads,
     ClearAudioCache,
-    PlayLocalPlaylist { id: String, index: usize },
+    PlayLocalPlaylist {
+        id: String,
+        index: usize,
+    },
     DeleteLocalPlaylist(String),
-    AddToLocalPlaylist { id: String, paths: Vec<String> },
-    CreateLocalPlaylist { name: String, paths: Vec<String> },
-    RemoveFromLocalPlaylist { id: String, index: usize },
+    AddToLocalPlaylist {
+        id: String,
+        paths: Vec<String>,
+    },
+    CreateLocalPlaylist {
+        name: String,
+        paths: Vec<String>,
+    },
+    RemoveFromLocalPlaylist {
+        id: String,
+        index: usize,
+    },
     UndoPlaylistChange,
     SignIn,
     CancelSignIn,
     LogOut,
     Toast(String),
     Lyrics(crate::lyrics_app::LyricsAction),
-    ThemeSet { key: String, value: String },
+    ThemeSet {
+        key: String,
+        value: String,
+    },
     /// Shown, not written (while a slider or color is being dragged).
-    ThemePreview { key: String, value: String },
-    ConfigSet { key: String, value: crate::bridge::ConfigValue },
+    ThemePreview {
+        key: String,
+        value: String,
+    },
+    ConfigSet {
+        key: String,
+        value: crate::bridge::ConfigValue,
+    },
     FilesAdded(Vec<String>),
     SaveSong(String),
-    SaveCollection { uri: String, name: String },
+    SaveCollection {
+        uri: String,
+        name: String,
+    },
     StopSaveSet(String),
     ShareBrowse(String),
-    ShareGet { peer: String, ids: Vec<String> },
+    ShareGet {
+        peer: String,
+        ids: Vec<String>,
+    },
     AiSend(String),
     AiCancel,
     AiRetry,
     AiNewChat,
-    AiSignIn { reconsent: bool, new_account: bool },
+    AiSignIn {
+        reconsent: bool,
+        new_account: bool,
+    },
     AiCancelSignIn,
     AiSignOut,
     AiSelectAccount(String),
     AiApprove(String),
     AiDecline(String),
-    AiSaveDraft { draft: String, replace: Option<String> },
+    AiSaveDraft {
+        draft: String,
+        replace: Option<String>,
+    },
     AiDiscardDraft(String),
-    AiEditDraft { draft: String, edit: crate::assistant_app::DraftEdit },
+    AiEditDraft {
+        draft: String,
+        edit: crate::assistant_app::DraftEdit,
+    },
+    /// ▶ on a recommendation: its 30-second preview (again: stop).
+    AiPreview(String),
+    /// "+ add" on a recommendation card (`uri` None: every song on it) to a playlist (bare ID).
+    AiAddPicks {
+        card: String,
+        uri: Option<String>,
+        playlist: String,
+    },
+    AiDismissPicks(String),
     AiUndo,
     AiRefreshModels,
     AiSetModel(String),
@@ -172,13 +262,26 @@ pub enum Action {
     AiLimitAcknowledged,
     AiUseSpotify(bool),
     /// Files picked (already copied into Glass's folder) or dropped, for `target`.
-    AddFiles { paths: Vec<String>, target: crate::types::FileTarget },
+    AddFiles {
+        paths: Vec<String>,
+        target: crate::types::FileTarget,
+    },
     /// A playlist's local songs that aren't here, from your other devices.
     GetMissingFromDevices(String),
-    SendToDevice { peer: String, paths: Vec<String> },
+    SendToDevice {
+        peer: String,
+        paths: Vec<String>,
+    },
     GetFromDevices(Vec<String>),
-    AddLocalToPlaylist { playlist: String, paths: Vec<String> },
-    SaveTags { path: String, tags: crate::local_app::TagsModel, cover: crate::local_app::CoverChange },
+    AddLocalToPlaylist {
+        playlist: String,
+        paths: Vec<String>,
+    },
+    SaveTags {
+        path: String,
+        tags: crate::local_app::TagsModel,
+        cover: crate::local_app::CoverChange,
+    },
     RemoveSource(String),
     ThemeReset(String),
     SetLibrarySort(crate::config::LibrarySort),
@@ -191,13 +294,20 @@ pub enum Action {
     AppleMusicForgetPairing,
     /// These Local Files songs into the iPhone's music library (and into the
     /// playlist named, made if needed).
-    AppleMusicAdd { paths: Vec<String>, playlist: Option<String> },
+    AppleMusicAdd {
+        paths: Vec<String>,
+        playlist: Option<String>,
+    },
     AppleMusicStop,
     AppleMusicCheck,
     AppleMusicRestore,
     /// Moves a song in Now Playing's queue: `from` and `to` index the queue's
     /// `positions` (the player's own list); `uri` is the song meant.
-    MoveInQueue { uri: String, from: usize, to: usize },
+    MoveInQueue {
+        uri: String,
+        from: usize,
+        to: usize,
+    },
     /// Local Files songs into Local Files' own queue (while it plays).
     QueueLocal(Vec<String>),
 }
@@ -207,19 +317,32 @@ pub enum Msg {
     /// Swift's view of things changed (pages shown, panels open, in front or not).
     Subscribe(Route),
     Unsubscribe(Route),
-    Panels { queue: bool, devices: bool, now_playing: bool },
+    Panels {
+        queue: bool,
+        devices: bool,
+        now_playing: bool,
+    },
     Foreground(bool),
     /// Check whether these are in the library (hearts, Follow, Save buttons).
     WantSaved(Vec<String>),
     SetSettings(Box<Settings>),
     SetModel(Box<crate::settings_app::SettingsModel>),
     /// The audio route changed (`gone`: the device that was playing went away).
-    RouteChanged { gone: bool },
+    RouteChanged {
+        gone: bool,
+    },
     /// A phone call or Siri took the audio over (`began`), or gave it back.
-    Interrupted { began: bool, resume: bool },
+    Interrupted {
+        began: bool,
+        resume: bool,
+    },
     SignInStarted(u64, Result<crate::signin::Pending, String>),
     SignedIn(u64, Result<Arc<Auth>, String>),
-    Data { key: String, result: Result<Arc<Value>, String>, generation: u64 },
+    Data {
+        key: String,
+        result: Result<Arc<Value>, String>,
+        generation: u64,
+    },
     PlayerPushed,
     Player(Result<Value, String>),
     Queue(Result<Value, String>),
@@ -228,30 +351,61 @@ pub enum Msg {
     SavedFailed(Vec<String>),
     EngineReady(Result<Engine, String>),
     Engine(EngineEvent),
-    Done { toast: Option<String>, invalidate: Vec<String>, refresh_player: bool, navigate: Option<Route> },
+    Done {
+        toast: Option<String>,
+        invalidate: Vec<String>,
+        refresh_player: bool,
+        navigate: Option<Route>,
+    },
     Failed(String),
     DjClips(u64, Result<Option<crate::dj::Voice>, String>),
     LocalScanned(Vec<LocalTrack>),
-    Lyrics { generation: u64, resolved: crate::lyrics::service::Resolved },
+    Lyrics {
+        generation: u64,
+        resolved: crate::lyrics::service::Resolved,
+    },
     Palette(String, Option<crate::palette::Palette>),
-    Measured { audio: u64, lyrics: (u64, u64) },
+    Measured {
+        audio: u64,
+        lyrics: (u64, u64),
+    },
     TagsSaved(std::path::PathBuf, Result<(), String>),
     SaveSong(String, crate::save_song::Status),
     /// A collection's songs to save; a playlist's description and cover (saved beside them).
-    SaveSetItems { uri: String, name: String, kind: crate::save_song::SetKind, items: Vec<Value>, description: String, cover: Option<std::path::PathBuf> },
+    SaveSetItems {
+        uri: String,
+        name: String,
+        kind: crate::save_song::SetKind,
+        items: Vec<Value>,
+        description: String,
+        cover: Option<std::path::PathBuf>,
+    },
     SaveSongItem(Value),
     Share(crate::share::Event),
     AppleMusic(crate::apple_music::Update),
-    Ai { generation: u64, event: crate::assistant_app::AiEvent },
+    Ai {
+        generation: u64,
+        event: crate::assistant_app::AiEvent,
+    },
     AiWrote(crate::assistant_app::Wrote),
+    /// A recommendation's preview, ready to play (or why not).
+    AiPreview(u64, Result<Option<crate::dj::Voice>, String>),
     AiRegistered(String),
     AiSignedIn(Result<crate::ai::account::SignedIn, crate::ai::oauth::AuthError>),
-    AiModels { key: String, result: Result<Vec<crate::ai::openai::Model>, String> },
-    AiSignedOut { confirmed: bool },
+    AiModels {
+        key: String,
+        result: Result<Vec<crate::ai::openai::Model>, String>,
+    },
+    AiSignedOut {
+        confirmed: bool,
+    },
     AiOpenSignIn(String),
     AiKeySaved(Result<(), String>),
     /// The page on top and whether the assistant is on screen.
-    Screen { route: Option<Route>, assistant: bool },
+    Screen {
+        route: Option<Route>,
+        assistant: bool,
+    },
     /// The Activity page's data, measured.
     Activity(tokio::sync::oneshot::Sender<crate::activity_app::ActivityModel>),
     ClearRequestLog,
@@ -262,8 +416,14 @@ pub enum Msg {
     DebugAiMock(String),
     FilesRead(crate::types::FileTarget, Vec<std::path::PathBuf>, Vec<LocalTrack>),
     SettingsOpen(bool),
-    LyricsSearch { generation: u64, result: Result<Vec<crate::lyrics::Candidate>, String> },
-    LyricsTranslated { key: String, result: crate::lyrics::translate::Translation },
+    LyricsSearch {
+        generation: u64,
+        result: Result<Vec<crate::lyrics::Candidate>, String>,
+    },
+    LyricsTranslated {
+        key: String,
+        result: crate::lyrics::translate::Translation,
+    },
     /// Something the views read changed outside the messages above (a download finished).
     Changed,
     Shutdown,
@@ -346,7 +506,7 @@ pub struct MobileApp {
     dj_gen: u64,
     dj_line: Option<(String, Instant)>,
     dj_clips: crate::dj::Clips,
-    dj_http: reqwest::Client,
+    pub(crate) dj_http: reqwest::Client,
     pending_local: Option<Action>,
     local_links: HashMap<String, Option<usize>>,
     pub local: Option<LocalPlayer>,
@@ -567,6 +727,10 @@ impl MobileApp {
     fn next_wake(&self) -> Duration {
         if self.dj_voice.is_some() || self.dj_waiting {
             return Duration::from_millis(150);
+        }
+        // A recommendation's preview: its countdown, and resuming when it ends.
+        if self.ai_extra.preview.is_some() {
+            return Duration::from_millis(250);
         }
         let local_playing = self.local.as_ref().is_some_and(|l| l.is_playing());
         if self.pb.is_playing || local_playing || self.settings_dirty.is_some() {
@@ -1106,6 +1270,24 @@ impl MobileApp {
     // ------------------------------------------------------------ actions
 
     pub fn apply(&mut self, a: Action) {
+        // Something else is played (or the system's controls are used): a recommendation's preview stops.
+        if self.ai_extra.preview.is_some()
+            && matches!(
+                a,
+                Action::PlayContext { .. }
+                    | Action::PlayUris { .. }
+                    | Action::PlayLocal { .. }
+                    | Action::PlayLocalPaths { .. }
+                    | Action::Radio(_)
+                    | Action::Next
+                    | Action::Prev
+                    | Action::Play
+                    | Action::Pause
+            )
+        {
+            let p = self.ai_extra.preview.take();
+            self.ai_preview_end(p, false);
+        }
         match a {
             Action::PlayContext { context, track } => {
                 let mut body = json!({ "context_uri": context });
@@ -1582,6 +1764,9 @@ impl MobileApp {
             Action::AiSaveDraft { draft, replace } => self.ai_save_draft(&draft, replace),
             Action::AiDiscardDraft(id) => self.ai_discard_draft(&id),
             Action::AiEditDraft { draft, edit } => self.ai_edit_draft(&draft, edit),
+            Action::AiPreview(uri) => self.ai_preview(uri),
+            Action::AiAddPicks { card, uri, playlist } => self.ai_add_picks(&card, uri, playlist),
+            Action::AiDismissPicks(card) => self.ai_dismiss_picks(&card),
             Action::AiUndo => self.ai_undo_last(),
             Action::AiRefreshModels => {
                 self.ai.models_for.clear();
@@ -1625,14 +1810,14 @@ impl MobileApp {
                 let tx = self.tx.clone();
                 let inbox = crate::paths::documents().join("Imported");
                 self.rt.spawn_blocking(move || {
-                    let paths: Vec<std::path::PathBuf> = paths.into_iter().map(Into::into).collect();
+                    let paths: Vec<std::path::PathBuf> = paths.iter().map(|p| crate::paths::one_spelling(p.as_ref())).collect();
                     // A file waiting in a temporary folder would vanish: it's kept in Glass's folder.
                     let paths = crate::local::keep_temporary(paths, &inbox);
                     let tracks = crate::local::read_paths(&paths);
                     tx.send(Msg::FilesRead(target, paths, tracks));
                 });
             }
-            Action::FilesAdded(dirs) => self.files_added(dirs.into_iter().map(Into::into).collect()),
+            Action::FilesAdded(dirs) => self.files_added(dirs.iter().map(|d| crate::paths::one_spelling(d.as_ref())).collect()),
             Action::AddLocalToPlaylist { playlist, paths } => {
                 let all = self.local_tracks.clone().unwrap_or_default();
                 let uris: Vec<String> = paths.iter().filter_map(|p| all.iter().find(|t| t.path.to_string_lossy() == p.as_str())).map(crate::local::spotify_uri).collect();
@@ -1642,7 +1827,8 @@ impl MobileApp {
             }
             Action::SaveTags { path, tags, cover } => self.save_tags(path, tags, cover),
             Action::RemoveSource(dir) => {
-                self.settings.local_dirs.retain(|d| d.to_string_lossy() != dir);
+                let dir = crate::paths::one_spelling(dir.as_ref());
+                self.settings.local_dirs.retain(|d| crate::paths::one_spelling(d) != dir);
                 self.mark_settings_dirty();
                 self.apply(Action::RescanLocal);
             }
@@ -1688,7 +1874,7 @@ impl MobileApp {
         }
     }
 
-    fn is_playing_anything(&self) -> bool {
+    pub(crate) fn is_playing_anything(&self) -> bool {
         if self.local_file_active() {
             return self.local.as_ref().is_some_and(|l| l.is_playing());
         }
@@ -1697,6 +1883,12 @@ impl MobileApp {
 
     /// Desktop `Action::TogglePlay`.
     fn toggle_play(&mut self) {
+        // During a preview: the preview stops, and what it paused plays again.
+        if self.ai_extra.preview.is_some() {
+            let p = self.ai_extra.preview.take();
+            self.ai_preview_end(p, true);
+            return;
+        }
         if let Some(v) = self.dj_voice.as_ref() {
             v.toggle();
             self.pb.is_playing = !v.is_paused();
@@ -1943,10 +2135,7 @@ impl MobileApp {
         self.local_scanning = true;
         let dirs = self.settings.local_dirs.clone();
         let tx = self.tx.clone();
-        std::thread::Builder::new()
-            .name("glass-scan".into())
-            .spawn(move || tx.send(Msg::LocalScanned(crate::local::scan(&dirs))))
-            .ok();
+        std::thread::Builder::new().name("glass-scan".into()).spawn(move || tx.send(Msg::LocalScanned(crate::local::scan(&dirs)))).ok();
     }
 
     pub fn clear_local_links(&mut self) {
@@ -2076,11 +2265,7 @@ impl MobileApp {
             return None;
         }
         let pos = self.pb.position();
-        Some(if self.pb.context_uri.is_empty() {
-            json!({ "uris": [uri], "position_ms": pos })
-        } else {
-            json!({ "context_uri": self.pb.context_uri, "offset": { "uri": uri }, "position_ms": pos })
-        })
+        Some(if self.pb.context_uri.is_empty() { json!({ "uris": [uri], "position_ms": pos }) } else { json!({ "context_uri": self.pb.context_uri, "offset": { "uri": uri }, "position_ms": pos }) })
     }
 
     /// Before a command for this iPhone's player: a dead engine (one whose loss
@@ -2122,6 +2307,7 @@ impl MobileApp {
 
     /// Desktop `tick`, minus drawing.
     pub fn tick(&mut self) {
+        self.ai_preview_tick();
         if self.auth_state == AuthState::SignedIn {
             self.poll();
             if let Some((at, n)) = self.engine_retry
@@ -2549,6 +2735,7 @@ impl MobileApp {
             Msg::AppleMusic(u) => self.apple_music_update(u),
             Msg::Ai { generation, event } => self.ai_event(generation, event),
             Msg::AiWrote(w) => self.ai_wrote(w),
+            Msg::AiPreview(generation, r) => self.ai_preview_ready(generation, r),
             Msg::AiRegistered(id) => self.ai_registered(id),
             Msg::AiSignedIn(r) => self.ai_signed_in(r),
             Msg::AiModels { key, result } => self.ai_models_arrived(key, result),

@@ -3,8 +3,10 @@
 simulator (the app's debug-only `-assistantMock http://127.0.0.1:PORT/v1`).
 
 It answers GET /v1/models and streams POST /v1/responses like the real API
-(server-sent events), playing one conversation: search the local library, propose
-a playlist from what came back, ask to save it, then reply in words. Each request
+(server-sent events), playing one of two conversations: search the local library,
+propose a playlist from what came back, ask to save it, then reply in words; or,
+when the user asks for recommendations, read a playlist and recommend songs for
+"Road Trip" (whose first ten songs are left out). Each request
 body is appended to LOG (one JSON object per line) so a test can check what Glass
 sent — that no file paths or credentials left the app, for one.
 
@@ -25,6 +27,9 @@ def events_for(body):
     last_user = max((i for i, it in enumerate(items) if it.get("role") == "user"), default=-1)
     outputs = [it for it in items[last_user + 1:] if it.get("type") == "function_call_output"]
     calls = {it.get("call_id"): it.get("name") for it in items[last_user + 1:] if it.get("type") == "function_call"}
+    asked = str(items[last_user].get("content", "")) if last_user >= 0 else ""
+    if "recommend" in asked.lower():
+        return recommend(outputs, calls)
     if not outputs:
         return call("c1", "music.search_library", {"query": "", "artist": None, "genre": "city pop", "year_from": None, "year_to": None, "limit": 3})
     last = outputs[-1]
@@ -36,6 +41,17 @@ def events_for(body):
     if name.endswith("propose_playlist"):
         return call("c3", "music.request_save", {"draft_id": out.get("draft_id") or out.get("id") or "d1"})
     return text("Here's “Night Drive”: three city pop songs. Save it when you're ready.")
+
+
+def recommend(outputs, calls):
+    if not outputs:
+        return call("r1", "spotify.spotify_playlist", {"playlist_id": "p0", "query": None, "offset": None})
+    last = outputs[-1]
+    out = json.loads(last.get("output") or "{}")
+    if calls.get(last.get("call_id"), "").endswith("spotify_playlist"):
+        songs = [{"id": t["id"], "why": "the same quiet mood"} for t in out.get("tracks", [])[8:]]
+        return call("r2", "spotify.recommend_songs", {"title": "For Road Trip", "songs": songs, "for_playlist_id": "p7", "count": 4, "new_only": False})
+    return text("Here are four for “Road Trip”, none of them already in it. ▶ plays 30 seconds of each.")
 
 
 def call(call_id, name, args):

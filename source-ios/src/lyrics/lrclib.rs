@@ -387,6 +387,7 @@ mod tests {
             artists: vec![artist.into()],
             album: album.into(),
             duration_ms: secs * 1000,
+            ..Default::default()
         };
         let cases = [
             ("line-synced", t("I Want to Live", "Borislav Slavov", "Baldur's Gate 3 (Original Game Soundtrack)", 233), "line"),

@@ -1,5 +1,6 @@
 //! Now Playing in the album's colors (Settings ▸ Display ▸ "Match Now Playing to the
-//! album's colors").
+//! album's colors"; where they apply and which parts take them: the theme panel's album
+//! tab).
 //!
 //! The cover is sampled (a 64 px thumbnail, median cut in OKLab), and two things come
 //! out of it: an accent, the most vivid color that has some presence, brightened so it
@@ -158,9 +159,14 @@ impl AlbumColors {
     }
 
     /// The colors on screen now.
-    #[cfg(test)]
     pub fn shown(&self) -> Option<Palette> {
         self.shown
+    }
+
+    /// The wash has been painted.
+    #[cfg(test)]
+    pub fn washed(&self) -> bool {
+        self.texture.is_some()
     }
 
     fn load(&mut self, ctx: &egui::Context, uri: &str) {
@@ -306,13 +312,22 @@ mod tests {
         let p = Palette::from_pixels(&vec![[30, 90, 200]; 100]).unwrap();
         let base = Theme::default();
         let mut none = base.clone();
-        p.apply(&mut none, 0.0);
+        p.apply(&mut none, 0.0, Default::default());
         assert_eq!(none.accent, base.accent, "nothing at 0");
         let mut full = base.clone();
-        p.apply(&mut full, 1.0);
+        p.apply(&mut full, 1.0, Default::default());
         assert_eq!(full.accent, p.accent.rgba(1.0));
         assert_eq!(full.player_progress, full.accent);
         assert!(contrast(full.accent, full.on_accent) >= 4.5, "text on the accent reads");
+        // Parts left out keep the theme's colors.
+        let mut kept = base.clone();
+        p.apply(&mut kept, 1.0, crate::palette::AlbumParts { lyrics: false, visualizer: false, ..Default::default() });
+        assert_eq!((kept.accent, kept.player_background), (full.accent, full.player_background));
+        assert_eq!((&kept.lyrics, &kept.viz), (&base.lyrics, &base.viz));
+        let mut wash_only = base.clone();
+        p.apply(&mut wash_only, 1.0, crate::palette::AlbumParts { accent: false, lyrics: false, visualizer: false, background: true });
+        assert_eq!((wash_only.accent, wash_only.player_progress), (base.accent, base.player_progress));
+        assert_eq!(wash_only.player_background, full.player_background);
     }
 }
 
@@ -349,7 +364,7 @@ mod preview {
             }
             // Accent, sung line, sung word, text on the accent; then a progress bar.
             let mut theme = Theme::default();
-            p.apply(&mut theme, 1.0);
+            p.apply(&mut theme, 1.0, Default::default());
             for (i, color) in [theme.accent, theme.lyrics.current, theme.lyrics.highlight, theme.on_accent].iter().enumerate() {
                 for y in 0..22 {
                     for x in 0..60 {

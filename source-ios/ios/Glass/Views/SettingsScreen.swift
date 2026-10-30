@@ -176,18 +176,63 @@ struct SettingsScreen: View {
         // Lyrics
         if let c {
             let provider = c.lyricsProvider
+            let names = ["lrcred": "lrc.red", "qobuzify": "Qobuzify", "unison": "Unison", "netease": "NetEase", "lrcmux": "lrcmux", "spicy": "Spicy Lyrics", "musixmatch": "Musixmatch"]
+            let words = c.lyricsSources.isEmpty ? "" : " Word-by-word timing from " + c.lyricsSources.compactMap { names[$0] }.joined(separator: ", ") + " replaces line timing when they have the very recording."
             let sourceNote: String = switch provider {
             case "lrclib": "LRCLIB only."
             case "spotify": "Spotify only: Spotify's lyrics for songs played from Spotify."
-            default: c.lyricsFallback ? "Auto: LRCLIB first, then Spotify's lyrics for Spotify songs LRCLIB doesn't have." : "Auto: LRCLIB."
+            case "auto": (c.lyricsFallback ? "Auto: LRCLIB first, then Spotify's lyrics for Spotify songs LRCLIB doesn't have." : "Auto: LRCLIB.") + words
+            default: "\(names[provider] ?? provider) only (set in config.toml)."
             }
+            var options = [("auto", "Auto"), ("lrclib", "LRCLIB"), ("spotify", store.account.phase == .signedIn || store.demo ? "Spotify" : "Spotify · not connected")]
+            if let n = names[provider] { options.append((provider, n)) }
             var lyrics: [SRow] = [
                 row("Lyrics source", sourceNote) {
-                    ChipPicker(options: [("auto", "Auto"), ("lrclib", "LRCLIB"), ("spotify", store.account.phase == .signedIn || store.demo ? "Spotify" : "Spotify · not connected")], selected: provider) { store.core.setLyricsProvider(provider: $0) }
+                    ChipPicker(options: options, selected: provider) { store.core.setLyricsProvider(provider: $0) }
                 },
                 row("Use Spotify's lyrics when LRCLIB has none") {
                     Toggle("Use Spotify's lyrics when LRCLIB has none", isOn: Binding(get: { c.lyricsFallback }, set: { store.core.setLyricsFallback(on: $0) })).labelsHidden()
                 },
+            ]
+            if provider == "auto" {
+                // The word timing services asked alongside LRCLIB, in their usual order.
+                let order = ["spicy", "lrcred", "qobuzify", "musixmatch", "unison", "netease", "lrcmux"]
+                let notes = [
+                    "lrcred": "Word and syllable timing, duets and backing vocals; a free catalog.",
+                    "qobuzify": "Syllable timing for many Spanish and Japanese songs; free. Used only when it keeps time with the line-synced lyrics.",
+                    "unison": "Better Lyrics' community syncs; free.",
+                    "netease": "NetEase Cloud Music's word timing; free, but masks some words.",
+                    "lrcmux": "KuGou's word timing, through lrcmux; free, but masks some words.",
+                    "spicy": c.lyricsKeys.contains("spicy") ? "Community syllable syncs for songs played from Spotify, with your key." : "Needs your Spicy Lyrics key (below).",
+                    "musixmatch": c.lyricsKeys.contains("musixmatch") ? "With your API key (word timing needs Musixmatch's Enterprise plan)." : "Needs your Musixmatch API key (below).",
+                ]
+                for key in ["lrcred", "qobuzify", "unison", "netease", "lrcmux", "spicy", "musixmatch"] {
+                    let needsKey = (key == "spicy" || key == "musixmatch") && !c.lyricsKeys.contains(key)
+                    lyrics.append(row("Word timing: \(names[key]!)", notes[key]!) {
+                        Toggle(names[key]!, isOn: Binding(get: { c.lyricsSources.contains(key) && !needsKey }, set: { on in
+                            var list = c.lyricsSources.filter { $0 != key }
+                            if on { list.append(key) }
+                            store.core.setLyricsSources(sources: order.filter { list.contains($0) })
+                        }))
+                        .labelsHidden()
+                        .disabled(needsKey)
+                    })
+                }
+            }
+            for (key, label, how) in [
+                ("spicy", "Spicy Lyrics key", "Create an application at developers.spicylyrics.org and paste its secret key (or a client key with \"No origin header\" allowed). Kept in this iPhone's Keychain."),
+                ("musixmatch", "Musixmatch API key", "From developer.musixmatch.com. Word timing needs Musixmatch's Enterprise plan, line timing its Scale plan. Kept in this iPhone's Keychain."),
+            ] {
+                let saved = c.lyricsKeys.contains(key)
+                lyrics.append(row(label, saved ? "Saved. " + how : how) {
+                    if saved {
+                        BracketButton(title: "Remove") { store.core.removeLyricsKey(provider: key) }
+                    } else {
+                        LyricsKeyField(provider: key)
+                    }
+                })
+            }
+            lyrics += [
                 row("Translation", "Show the original, the original with a translation under each line, or the translation alone. 文A in the lyrics view switches too.") {
                     ChipPicker(options: [("off", "original"), ("below", "original + translation"), ("only", "translated")], selected: c.translation) { store.core.setLyricsTranslation(mode: $0) }
                 },
@@ -218,7 +263,7 @@ struct SettingsScreen: View {
             lyrics.append(row("Saved lyrics", "\(n == 1 ? "1 song" : "\(n) songs") · \((st?.lyricsCacheBytes ?? 0) / 1024) KB") {
                 if n > 0 { BracketButton(title: "Clear") { store.core.clearLyricsCache() } }
             })
-            lyrics.append(row("About LRCLIB", "Lyrics come from LRCLIB (lrclib.net), a free, community-made database. Glass keeps them on this iPhone and never shares them.") { EmptyView() })
+            lyrics.append(row("About lyrics sources", "Line-by-line lyrics come from LRCLIB (lrclib.net), a free, community-made database; word-by-word timing from the services above. They get the song's title, artist, album, length and ISRC (Spicy Lyrics and Qobuzify a Spotify song's ID instead). Glass keeps the answers on this iPhone and never shares them.") { EmptyView() })
             out.append(Section(title: "Lyrics", rows: lyrics))
         }
 
@@ -512,6 +557,29 @@ struct EqualizerCard: View {
     }
 }
 
+
+/// A lyrics service's key: like `ApiKeyField`, straight to the core's Keychain write.
+struct LyricsKeyField: View {
+    @Environment(Store.self) private var store
+    let provider: String
+    @State private var key = ""
+    var body: some View {
+        HStack(spacing: 6) {
+            SecureField("paste the key", text: $key)
+                .gFont(13)
+                .autocorrectionDisabled()
+                .textInputAutocapitalization(.never)
+                .frame(width: 150)
+                .onSubmit(save)
+            BracketButton(title: "Save") { save() }
+        }
+    }
+    private func save() {
+        let k = key.trimmingCharacters(in: .whitespacesAndNewlines)
+        key = ""
+        if !k.isEmpty { store.core.saveLyricsKey(provider: provider, key: k) }
+    }
+}
 
 /// The API key field: a secure field whose text goes straight to the core's
 /// Keychain write and is cleared at once.

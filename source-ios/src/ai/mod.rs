@@ -17,6 +17,7 @@ pub mod agent;
 pub mod control;
 pub mod oauth;
 pub mod openai;
+pub mod picks;
 pub mod secrets;
 pub mod spotify;
 pub mod tools;
@@ -99,6 +100,8 @@ pub struct Assistant {
     /// Messages sent with the next request (bounded in `agent`).
     pub history: Vec<Value>,
     pub drafts: Vec<Draft>,
+    /// Recommendation cards, oldest first.
+    pub picks: Vec<tools::Picks>,
     /// Spotify items the model has been shown: what it may use, and how the
     /// panel names Spotify songs in previews.
     pub catalog: spotify::Catalog,
@@ -140,6 +143,7 @@ impl Assistant {
             transcript: Vec::new(),
             history: Vec::new(),
             drafts: Vec::new(),
+            picks: Vec::new(),
             catalog: spotify::Catalog::default(),
             library: spotify::LibraryCache::default(),
             edited: HashSet::new(),
@@ -223,6 +227,7 @@ impl Assistant {
             }
             matches!(d.status, Editing | Saving)
         });
+        self.picks.clear();
         let keep: HashSet<String> = self.drafts.iter().flat_map(|d| d.tracks.iter().cloned()).collect();
         self.catalog.retain(&keep);
         self.approvals.clear();

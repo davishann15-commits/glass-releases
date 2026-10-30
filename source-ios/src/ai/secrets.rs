@@ -44,11 +44,30 @@ pub trait SecretStore: Send + Sync {
 
 const SERVICE: &str = "Glass assistant";
 
+/// The OS keyring, under "Glass assistant".
 pub struct Keyring;
+
+/// The OS keyring under another name (the lyrics services' keys live under "Glass lyrics").
+pub struct NamedKeyring(pub &'static str);
 
 impl SecretStore for Keyring {
     fn get(&self, key: &str) -> Result<Option<String>, String> {
-        let entry = keyring::Entry::new(SERVICE, key).map_err(friendly)?;
+        NamedKeyring(SERVICE).get(key)
+    }
+    fn set(&self, key: &str, value: &str) -> Result<(), String> {
+        NamedKeyring(SERVICE).set(key, value)
+    }
+    fn delete(&self, key: &str) -> Result<(), String> {
+        NamedKeyring(SERVICE).delete(key)
+    }
+    fn describe(&self) -> &'static str {
+        NamedKeyring(SERVICE).describe()
+    }
+}
+
+impl SecretStore for NamedKeyring {
+    fn get(&self, key: &str) -> Result<Option<String>, String> {
+        let entry = keyring::Entry::new(self.0, key).map_err(friendly)?;
         match entry.get_password() {
             Ok(v) => Ok(Some(v)),
             Err(keyring::Error::NoEntry) => Ok(None),
@@ -56,10 +75,10 @@ impl SecretStore for Keyring {
         }
     }
     fn set(&self, key: &str, value: &str) -> Result<(), String> {
-        keyring::Entry::new(SERVICE, key).and_then(|e| e.set_password(value)).map_err(friendly)
+        keyring::Entry::new(self.0, key).and_then(|e| e.set_password(value)).map_err(friendly)
     }
     fn delete(&self, key: &str) -> Result<(), String> {
-        match keyring::Entry::new(SERVICE, key).and_then(|e| e.delete_credential()) {
+        match keyring::Entry::new(self.0, key).and_then(|e| e.delete_credential()) {
             Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
             Err(e) => Err(friendly(e)),
         }

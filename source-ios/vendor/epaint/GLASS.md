@@ -1,8 +1,9 @@
 # epaint 0.36.2, patched for Glass
 
 This is epaint 0.36.2 from crates.io (MIT OR Apache-2.0, © the egui authors,
-https://github.com/emilk/egui) with one change to its font atlas. `Cargo.toml`
-in the app uses it via `[patch.crates-io]`; everything else is unchanged.
+https://github.com/emilk/egui) with two changes: its font atlas, and where
+glyphs of fallback fonts sit on a line. `Cargo.toml` in the app uses it via
+`[patch.crates-io]`; everything else is unchanged.
 
 Why: epaint makes the font atlas as wide as the GPU's largest texture (16384 on
 a Mac) and doubles its height as glyphs arrive. A row is as tall as its tallest
@@ -19,3 +20,9 @@ and fonts are rebuilt whenever that value differs between passes.
 Changes (marked `Glass` in the source):
 
 - `src/text/fonts.rs` — the atlas is at most 2048 wide.
+- `src/text/text_layout.rs`, `text_layout_types.rs`, `font.rs` — a glyph from
+  a fallback font is centered on the main font by the height of their glyph
+  boxes, without the line gap. Upstream counts the line gap, so Japanese in
+  Hiragino (line gap half an em) sat a quarter em above the baseline of the
+  Latin text around it (SF Mono: 0.967 em; Hiragino: 0.719 em upstream, 0.969
+  em now). Fonts without a line gap are placed as before.

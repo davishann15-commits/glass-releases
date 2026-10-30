@@ -275,9 +275,15 @@ fn body(app: &mut App, ui: &mut Ui, c: &Ctx) {
     row(ui, c, "Show desktop notifications when the song changes", "Uses your system's notifications.", |ui| {
         toggle(ui, &mut app.settings.track_notifications);
     });
-    row(ui, c, "Match Now Playing to the album's colors", "Now Playing, its lyrics and visualizer, and the player bar take their colors from the cover of what's playing.", |ui| {
-        toggle(ui, &mut app.settings.album_colors);
-    });
+    row(
+        ui,
+        c,
+        "Match Now Playing to the album's colors",
+        "Now Playing, its lyrics and visualizer, and the player bar take their colors from the cover of what's playing. The theme panel's album tab can spread them to every page or keep some of your theme's colors.",
+        |ui| {
+            toggle(ui, &mut app.settings.album_colors);
+        },
+    );
 
     // ---------------------------------------------------------------- Playback
     section(ui, c, "Playback");
@@ -484,26 +490,103 @@ fn save_song_settings(app: &mut App, ui: &mut Ui, c: &Ctx) {
 }
 
 fn lyrics_settings(app: &mut App, ui: &mut Ui, c: &Ctx) {
+    use crate::lyrics::ProviderId;
     use crate::lyrics::service::{ProviderSetting, SPOTIFY_NOTE};
     use crate::lyrics::translate::{Engine, Mode};
     let cfg = app.config.lyrics().clone();
     let connected = app.spotify_source().is_some();
-    let note = match cfg.provider {
-        ProviderSetting::Auto if cfg.fallback => "Auto: LRCLIB first, then Spotify's lyrics for Spotify songs LRCLIB doesn't have.",
-        ProviderSetting::Auto => "Auto: LRCLIB only, since fallback is off.",
-        ProviderSetting::Lrclib => "LRCLIB only.",
-        ProviderSetting::Spotify => "Spotify only: Spotify's lyrics for songs played from Spotify.",
+    let words = if cfg.sources.is_empty() {
+        String::new()
+    } else {
+        format!(" Word-by-word timing from {} replaces line timing when they have the very recording.", cfg.sources.iter().map(|p| p.label()).collect::<Vec<_>>().join(", "))
     };
-    row(ui, c, "Lyrics source", note, |ui| {
-        // Right to left: Spotify, LRCLIB, Auto.
-        for (p, label) in [(ProviderSetting::Spotify, if connected { "Spotify" } else { "Spotify · not connected" }), (ProviderSetting::Lrclib, "LRCLIB"), (ProviderSetting::Auto, "Auto")] {
+    let note = match cfg.provider {
+        ProviderSetting::Auto if cfg.fallback => format!("Auto: LRCLIB first, then Spotify's lyrics for Spotify songs LRCLIB doesn't have.{words}"),
+        ProviderSetting::Auto => format!("Auto: LRCLIB, since fallback is off.{words}"),
+        ProviderSetting::Only(ProviderId::Lrclib) => "LRCLIB only.".into(),
+        ProviderSetting::Only(ProviderId::Spotify) => "Spotify only: Spotify's lyrics for songs played from Spotify.".into(),
+        ProviderSetting::Only(p) => format!("{} only (set in config.toml).", p.label()),
+    };
+    row(ui, c, "Lyrics source", &note, |ui| {
+        // Right to left: a service chosen in config.toml, Spotify, LRCLIB, Auto.
+        if let ProviderSetting::Only(p) = cfg.provider
+            && !matches!(p, ProviderId::Lrclib | ProviderId::Spotify)
+        {
+            widgets::chip(ui, p.label(), true);
+        }
+        for (p, label) in [
+            (ProviderSetting::Only(ProviderId::Spotify), if connected { "Spotify" } else { "Spotify · not connected" }),
+            (ProviderSetting::Only(ProviderId::Lrclib), "LRCLIB"),
+            (ProviderSetting::Auto, "Auto"),
+        ] {
             if widgets::chip(ui, label, cfg.provider == p) && cfg.provider != p {
                 app.act(Action::LyricsProvider(p));
             }
         }
     });
-    if cfg.provider == ProviderSetting::Spotify {
+    if cfg.provider == ProviderSetting::Only(ProviderId::Spotify) {
         row(ui, c, "Spotify lyrics", SPOTIFY_NOTE, |_| {});
+    }
+    if cfg.provider == ProviderSetting::Auto {
+        // Which word timing services are asked, in their order of preference.
+        row(
+            ui,
+            c,
+            "Word-by-word lyrics",
+            "Asked alongside LRCLIB; their word or syllable timing is used only for the very recording that's playing, and only when it keeps time with the line-synced lyrics. lrc.red, Qobuzify and Unison are free catalogs (Qobuzify covers many Spanish and Japanese songs); NetEase and lrcmux are free but mask some words. Spicy Lyrics and Musixmatch need your own key (below).",
+            |ui| {
+                for p in [ProviderId::Musixmatch, ProviderId::Spicy, ProviderId::Lrcmux, ProviderId::NetEase, ProviderId::Unison, ProviderId::Qobuzify, ProviderId::LrcRed] {
+                    let on = cfg.sources.contains(&p);
+                    let needs = p.needs_key() && !app.lyrics_key_set(p);
+                    let label = if needs { format!("{} · needs a key", p.label()) } else { p.label().to_string() };
+                    if widgets::chip(ui, &label, on && !needs) && !needs {
+                        let mut list = cfg.sources.clone();
+                        if on {
+                            list.retain(|&x| x != p);
+                        } else {
+                            // Back in its usual place in the order.
+                            let rank = |x: &ProviderId| ProviderId::WORD.iter().position(|w| w == x).unwrap_or(99);
+                            list.push(p);
+                            list.sort_by_key(rank);
+                        }
+                        app.act(Action::LyricsSources(list));
+                    }
+                }
+            },
+        );
+    }
+    for (p, label, how) in [
+        (
+            ProviderId::Spicy,
+            "Spicy Lyrics key",
+            "Community syllable syncs, with duets and backing vocals, for songs played from Spotify. Create an application at developers.spicylyrics.org and paste its secret key (or a client key with \"No origin header\" allowed). Kept in the system keychain.",
+        ),
+        (
+            ProviderId::Musixmatch,
+            "Musixmatch API key",
+            "From developer.musixmatch.com. Word timing needs Musixmatch's Enterprise plan and line timing its Scale plan; other keys find nothing new. Kept in the system keychain.",
+        ),
+    ] {
+        let id = egui::Id::new(("lyrics-key-field", p.key()));
+        let set = app.lyrics_key_set(p);
+        let note = if set { format!("Saved. {how}") } else { how.to_string() };
+        row(ui, c, label, &note, |ui| {
+            if set {
+                if ui.button("Remove").clicked() {
+                    app.act(Action::LyricsKey(p, None));
+                }
+                return;
+            }
+            let mut field = ui.data(|d| d.get_temp::<String>(id)).unwrap_or_default();
+            let save = ui.add_enabled(!field.trim().is_empty(), egui::Button::new("Save")).clicked();
+            let r = ui.add(egui::TextEdit::singleline(&mut field).password(true).hint_text("paste the key").desired_width(180.0));
+            if save || (r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) && !field.trim().is_empty()) {
+                app.act(Action::LyricsKey(p, Some(field.trim().to_string())));
+                ui.data_mut(|d| d.remove::<String>(id));
+            } else {
+                ui.data_mut(|d| d.insert_temp(id, field));
+            }
+        });
     }
     // Translation: how lyrics are shown, into which language, and by whom.
     row(ui, c, "Translation", "Show the original, the original with a translation under each line, or the translation alone. T in the lyrics view switches too.", |ui| {
@@ -615,8 +698,8 @@ fn lyrics_settings(app: &mut App, ui: &mut Ui, c: &Ctx) {
     row(
         ui,
         c,
-        "About LRCLIB",
-        "Lyrics come from LRCLIB (lrclib.net), a free lyrics database kept by its community. When lyrics are on screen, Glass sends LRCLIB the song's title, artist, album and length, then keeps the answer on this computer. Lyrics belong to their rights holders; Glass shows them for your personal use and never shares them.",
+        "About lyrics sources",
+        "Line-by-line lyrics come from LRCLIB (lrclib.net), a free lyrics database kept by its community; word-by-word timing from the services above. When lyrics are on screen, Glass sends them the song's title, artist, album, length and ISRC (Spicy Lyrics and Qobuzify get a Spotify song's ID instead), then keeps the answers on this computer. Lyrics belong to their rights holders; Glass shows them for your personal use and never shares them.",
         |_| {},
     );
 }

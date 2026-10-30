@@ -7,6 +7,7 @@ use super::icons::Icon;
 use super::theme::{self, col, px, sp};
 use super::widgets;
 use crate::app::App;
+use crate::palette::AlbumParts;
 use crate::theme_config::Rgba;
 use eframe::egui::{self, Align2, Color32, Id, Key, Rect, RichText, Sense, Stroke, StrokeKind, Ui, UiBuilder, pos2, vec2};
 
@@ -28,6 +29,8 @@ fn current(app: &App, key: &str) -> String {
         "lyrics.position" => l.position.clone(),
         "lyrics.animation" => l.animation.clone(),
         "lyrics.bold" => l.bold.to_string(),
+        "lyrics.word_lead" => l.word_lead.to_string(),
+        "lyrics.word_glow" => l.word_glow.to_string(),
         "font.lyrics" => t.lyrics_family.clone(),
         "visualizer.style" => v.style.clone(),
         "visualizer.color" => v.color.hex(),
@@ -104,9 +107,9 @@ fn body(app: &mut App, ui: &mut Ui, w: f32) {
         });
         ui.add_space(sp(1.25));
 
-        // Tabs: the [theme] values, [lyrics] and [visualizer].
+        // Tabs: the [theme] values, [lyrics], [visualizer], and album colors.
         ui.horizontal(|ui| {
-            for (i, name) in ["theme", "lyrics", "visualizer"].iter().enumerate() {
+            for (i, name) in ["theme", "lyrics", "visualizer", "album"].iter().enumerate() {
                 if ui.selectable_label(app.theme_tab == i as u8, RichText::new(*name).font(theme::regular(12.5))).clicked() {
                     app.theme_tab = i as u8;
                     app.theme_fields.clear();
@@ -126,6 +129,7 @@ fn body(app: &mut App, ui: &mut Ui, w: f32) {
                     egui::ScrollArea::vertical().id_salt("theme-viz").max_height(px(400.0)).show(ui, |ui| visualizer_tab(app, ui));
                     reset_row(app, ui, "visualizer");
                 }
+                3 => album_tab(app, ui),
                 _ => {
                     ui.label(RichText::new("[theme]").font(theme::regular(12.5)).color(col::sub()));
                     ui.add_space(sp(0.5));
@@ -255,11 +259,20 @@ fn labeled(ui: &mut Ui, label: &str, control: impl FnOnce(&mut Ui)) {
 
 /// A slider that previews while dragged and writes theme.toml when let go.
 fn slider_row(app: &mut App, ui: &mut Ui, label: &str, key: &str, range: std::ops::RangeInclusive<f64>, int: bool) {
+    slider_with(app, ui, label, key, range, int, "", "");
+}
+
+/// `slider_row` with a unit after the value and a note on hover.
+#[allow(clippy::too_many_arguments)]
+fn slider_with(app: &mut App, ui: &mut Ui, label: &str, key: &str, range: std::ops::RangeInclusive<f64>, int: bool, unit: &str, hint: &str) {
     let mut v: f64 = current(app, key).parse().unwrap_or(*range.start());
     labeled(ui, label, |ui| {
-        let mut s = egui::Slider::new(&mut v, range).show_value(true);
+        let mut s = egui::Slider::new(&mut v, range).show_value(true).suffix(unit);
         s = if int { s.integer() } else { s.fixed_decimals(2) };
-        let r = ui.add(s);
+        let mut r = ui.add(s);
+        if !hint.is_empty() {
+            r = r.on_hover_text(hint);
+        }
         let raw = if int { format!("{}", v.round() as i64) } else { format!("{v:.2}") };
         if r.changed() {
             app.theme.preview(key, &raw);
@@ -317,6 +330,18 @@ fn lyrics_tab(app: &mut App, ui: &mut Ui) {
     field_row(app, ui, "current", "lyrics.current");
     field_row(app, ui, "other", "lyrics.other");
     field_row(app, ui, "highlight", "lyrics.highlight");
+    // Songs with word timing: when words light up, and how long they stay lit.
+    slider_with(
+        app,
+        ui,
+        "words early",
+        "lyrics.word_lead",
+        -500.0..=500.0,
+        true,
+        " ms",
+        "With word timing: light each word up this much before it's sung (negative: after). The lines keep their time; the song's own timing is in the lyrics footer.",
+    );
+    slider_with(app, ui, "word glow", "lyrics.word_glow", 0.0..=2000.0, true, " ms", "With word timing: how long a sung word stays bright before it settles into the line's color.");
     slider_row(app, ui, "size", "lyrics.size", 0.5..=2.0, false);
     choice_row(app, ui, "align", "lyrics.align", LYRICS_ALIGN);
     choice_row(app, ui, "position", "lyrics.position", LYRICS_POSITION);
@@ -326,6 +351,77 @@ fn lyrics_tab(app: &mut App, ui: &mut Ui) {
     slider_row(app, ui, "speed", "lyrics.speed", 0.25..=3.0, false);
     bool_row(app, ui, "bold line", "lyrics.bold");
     field_row(app, ui, "font", "font.lyrics");
+}
+
+/// One of `AlbumParts`' switches.
+type Part = fn(&mut AlbumParts) -> &mut bool;
+
+/// Album colors (Settings ▸ Display): on or off, where they apply, and which parts take
+/// them; the parts left out keep the theme's colors. Kept in Glass's settings, not
+/// theme.toml.
+fn album_tab(app: &mut App, ui: &mut Ui) {
+    let mut on = app.settings.album_colors;
+    ui.horizontal(|ui| {
+        ui.label(RichText::new("album colors").font(theme::regular(12.5)).color(col::sub()));
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if ui.checkbox(&mut on, RichText::new("on").font(theme::regular(12.0))).on_hover_text("Take colors from the cover of what's playing").changed() {
+                app.settings.album_colors = on;
+                app.mark_settings_dirty();
+            }
+        });
+    });
+    ui.add_space(sp(0.5));
+    ui.add_enabled_ui(on, |ui| {
+        let everywhere = app.settings.album_everywhere;
+        let mut pick = None;
+        labeled(ui, "where", |ui| {
+            for (all, word) in [(false, "now playing"), (true, "everywhere")] {
+                if ui.selectable_label(everywhere == all, RichText::new(word).font(theme::regular(12.0))).clicked() {
+                    pick = Some(all);
+                }
+            }
+        });
+        if let Some(all) = pick.filter(|&a| a != everywhere) {
+            app.settings.album_everywhere = all;
+            app.mark_settings_dirty();
+        }
+        let rows: [(&str, &str, Part); 4] = [
+            ("accent", "The accent, and the progress bar, focus and selection drawn with it", |p| &mut p.accent),
+            ("lyrics", "The lyrics' line colors and the word being sung", |p| &mut p.lyrics),
+            ("visualizer", "The visualizer's gradient", |p| &mut p.visualizer),
+            ("background", "The cover's colors washed in behind, and the player bar's tint", |p| &mut p.background),
+        ];
+        ui.add_space(sp(0.25));
+        ui.label(RichText::new("album colors for").font(theme::regular(12.0)).color(col::sub()));
+        for (label, hint, field) in rows {
+            let mut v = *field(&mut app.settings.album_parts);
+            if ui.checkbox(&mut v, RichText::new(label).font(theme::regular(12.5))).on_hover_text(hint).changed() {
+                *field(&mut app.settings.album_parts) = v;
+                app.mark_settings_dirty();
+            }
+        }
+    });
+    ui.add_space(sp(0.75));
+    let note = if !on {
+        "Off: the theme's colors everywhere."
+    } else if app.settings.album_everywhere {
+        "Every page takes the album's colors, as on iPhone; unticked parts keep the theme's. A new song's colors bloom out from its cover."
+    } else {
+        "Now Playing and the player bar take the album's colors; other pages, and unticked parts, keep the theme's."
+    };
+    ui.add(egui::Label::new(RichText::new(note).font(theme::regular(11.5)).color(col::muted())).wrap());
+    // What the playing cover gives: its accent and the three colors of its wash.
+    if let Some(p) = app.album_colors.shown().filter(|_| on) {
+        ui.add_space(sp(0.75));
+        ui.horizontal(|ui| {
+            ui.label(RichText::new("now").font(theme::regular(12.0)).color(col::sub()));
+            ui.add_space(sp(1.0));
+            for c in std::iter::once(p.accent).chain(p.wash) {
+                let (r, _) = ui.allocate_exact_size(vec2(px(18.0), px(18.0)), Sense::hover());
+                ui.painter().circle(r.center(), r.width() / 2.0, c.rgba(1.0).color32(), Stroke::new(1.0, col::divider()));
+            }
+        });
+    }
 }
 
 fn visualizer_tab(app: &mut App, ui: &mut Ui) {
